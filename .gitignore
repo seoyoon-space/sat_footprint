@@ -1,0 +1,47 @@
+# Java
+java/target/
+*.class
+*.jar
+
+# Maven
+.mvn/
+mvnw
+mvnw.cmd
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+.project
+.classpath
+.settings/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (large files - not tracked)
+data/
+orekit-data-master/
+tiles/
+*.bin
+*.tif
+*.tiff
+
+# Output
+footprints/
+*.csv
+!examples/*.csv
+
+# Environment
+.env

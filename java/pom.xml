@@ -1,0 +1,49 @@
+<project xmlns="http://maven.apache.org/POM/4.0.0">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>com.naraspace</groupId>
+  <artifactId>sat-footprint</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>jar</packaging>
+
+  <!--
+    Version pinning: Rugged 4.0.1 requires Orekit 13.1.2.
+    Confirmed from CS-SI/Rugged GitHub pom.xml: <rugged.orekit.version>13.1.2
+    These two versions MUST stay matched.
+  -->
+  <properties>
+    <maven.compiler.source>17</maven.compiler.source>
+    <maven.compiler.target>17</maven.compiler.target>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <orekit.version>13.1.2</orekit.version>
+    <rugged.version>4.0.1</rugged.version>
+  </properties>
+
+  <build>
+    <plugins>
+      <plugin>
+        <groupId>org.codehaus.mojo</groupId>
+        <artifactId>exec-maven-plugin</artifactId>
+        <version>3.1.0</version>
+      </plugin>
+    </plugins>
+  </build>
+
+  <dependencies>
+    <dependency>
+      <groupId>org.orekit</groupId>
+      <artifactId>orekit</artifactId>
+      <version>${orekit.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.orekit</groupId>
+      <artifactId>rugged</artifactId>
+      <version>${rugged.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.core</groupId>
+      <artifactId>jackson-databind</artifactId>
+      <version>2.17.2</version>
+    </dependency>
+  </dependencies>
+</project>
