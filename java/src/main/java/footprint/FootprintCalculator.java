@@ -57,7 +57,7 @@ public class FootprintCalculator {
         this.lineSensor = new LineSensor("mainSensor", datation, Vector3D.ZERO, los);
 
         // DEM 공급
-        GLO30TileUpdater tileUpdater = new GLO30TileUpdater(tileIndexJsonPath);
+        ASTGTMTileUpdater tileUpdater = new ASTGTMTileUpdater(tileIndexJsonPath);
 
         // HK → Orekit 타입 변환
         List<TimeStampedPVCoordinates> satellitePVList = HkToOrekitConverter.toPVList(hkSamples);

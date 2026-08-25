@@ -12,16 +12,16 @@ import java.nio.file.Paths;
 import java.util.List;
 
 /**
- * Copernicus GLO-30 DEM을 Rugged에 공급하는 TileUpdater.
+ * ASTGTMV003 DEM을 Rugged에 공급하는 TileUpdater.
  *
  * 데이터: tile_index.json + raw binary(.bin)
  *   .bin: float32, row-major, row0=South, col0=West (Rugged 규약 일치)
  */
-public class GLO30TileUpdater implements TileUpdater {
+public class ASTGTMTileUpdater implements TileUpdater {
 
     private final List<TileRecord> tiles;
 
-    public GLO30TileUpdater(String tileIndexJsonPath) throws IOException {
+    public ASTGTMTileUpdater(String tileIndexJsonPath) throws IOException {
         ObjectMapper mapper = new ObjectMapper();
         byte[] json = Files.readAllBytes(Paths.get(tileIndexJsonPath));
         this.tiles = List.of(mapper.readValue(json, TileRecord[].class));
