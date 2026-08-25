@@ -1,0 +1,15 @@
+# 필수 패키지만 작성.
+# 모든 추가 수학/좌표계 계산은 프로젝트 내부 라이브러리(core/coordinates.py)에서 처리.
+
+fastapi==0.115.0
+uvicorn==0.30.6
+pydantic==2.13.4
+pydantic-settings==2.15.0
+pandas==3.0.5
+sqlalchemy==2.0.35
+pymysql==1.1.1
+pytest==8.3.3
+
+# Optional / not required for the basic API runtime:
+# scipy, shapely, geojson, numpy
+# these are intentionally avoided in the core API path and handled via our own implementation.
