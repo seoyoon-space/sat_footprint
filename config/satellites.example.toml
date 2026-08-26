@@ -1,0 +1,38 @@
+# 위성별 DB 접속 정보 레지스트리 예시 파일.
+#
+# 사용법:
+#   1) 이 파일을 config/satellites.toml 로 복사
+#   2) 아래 값들을 실제 DB 접속 정보로 교체
+#   3) config/satellites.toml 은 절대 커밋하지 말 것 (실 접속 정보 포함)
+#
+# HKLoader.for_satellite("O1A") 처럼 satellite_id로 조회하면
+# config.SatelliteRegistry가 이 파일에서 해당 위성의 DB 설정을 읽어온다.
+# (위성마다 DB 인스턴스 자체가 분리되어 있는 구조를 반영)
+
+[O1A]
+db_host = "your_o1a_mysql_host_or_ip"
+db_port = 3306
+db_user = "your_mysql_user"
+db_password = "your_mysql_password"
+db_name = "nstanl"
+
+[O1B]
+db_host = "your_o1b_mysql_host_or_ip"
+db_port = 3306
+db_user = "your_mysql_user"
+db_password = "your_mysql_password"
+db_name = "nstanl"
+
+[E3T]
+db_host = "your_e3t_mysql_host_or_ip"
+db_port = 3306
+db_user = "your_mysql_user"
+db_password = "your_mysql_password"
+db_name = "nstanl"
+
+[BSS]
+db_host = "your_bss_mysql_host_or_ip"
+db_port = 3306
+db_user = "your_mysql_user"
+db_password = "your_mysql_password"
+db_name = "nstanl"

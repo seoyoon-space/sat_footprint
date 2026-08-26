@@ -41,6 +41,14 @@ MYSQL_SCHEMA=nstanl
 
 For the actual system, the DB name is usually `nstanl` and the HK tables live under that schema as `nstanl.tbl_obs1a_hk1`, `...hk2`, ...
 
+### Per-satellite DB registry (optional)
+
+If each satellite has its own DB instance (e.g. O1A, O1B), copy `config/satellites.example.toml` to `config/satellites.toml` and fill in the real per-satellite DB settings. `config/satellites.toml` must never be committed (it is git-ignored already).
+
+```bash
+copy config\satellites.example.toml config\satellites.toml
+```
+
 Optional direct URL:
 
 ```env
@@ -248,8 +256,17 @@ Then validate the loader with:
 python -m core.loader.hk_loader --start-time "2026-08-20" --end-time "2026-08-21" --max-rows 5
 ```
 
+## Docker
+
+Build and run the API in a container (reads `.env` for DB settings):
+
+```bash
+docker build -t sat-simulation-api .
+docker run --rm -p 8000:8000 --env-file .env sat-simulation-api
+```
+
 ## Running tests
 
 ```bash
-python -m pytest tests/test_loader.py -q
+python -m pytest tests/ -q
 ```

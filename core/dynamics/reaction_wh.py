@@ -1,5 +1,5 @@
 import numpy as np
-from core.dynamics.actuactor import ActuatorModel  # 파일명이 actuactor.py(오타)이므로 import도 맞춤
+from core.dynamics.actuator import ActuatorModel
 
 class ReactionWheel(ActuatorModel):
     """

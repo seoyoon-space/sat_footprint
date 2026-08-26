@@ -1,0 +1,20 @@
+# Environment / secrets
+.env
+config/satellites.toml
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+
+# Generated HK output
+hk_output/
+
+# IDE
+.vscode/
+.idea/
