@@ -1,9 +1,9 @@
 """core/coordinates.py, core/math_utils/quat.py 검증.
 
-이 프로젝트의 계산 코드는 numpy/scipy 없이 표준 라이브러리(math)만으로 구현하는 것이
-원칙이다(requirements.txt 참고). 여기서는 numpy/scipy를 '정답지' 역할로만 사용해
-직접 구현한 stdlib 코드의 결과가 잘 알려진 외부 라이브러리 결과와 일치하는지 검증한다.
-numpy/scipy는 테스트 전용이며 런타임(런타임 requirements)에는 포함되지 않는다.
+이 계산 코드는 numpy/scipy 없이 표준 라이브러리(math)만으로 구현하는 것이 원칙(requirements.txt 참고). 
+여기서는 numpy/scipy를 q비교군으로 사용. 
+직접 구현한 stdlib 코드의 결과가 external library results와 일치하는지 검증.
+numpy/scipy는 테스트 전용이며 런타임(런타임 requirements)에는 미포함.
 """
 from __future__ import annotations
 
@@ -95,7 +95,7 @@ def test_quaternion_multiply_matches_scipy_composition():
         combined = (r1 * r2).as_quat()  # scalar-last
         reference_scalar_first = (combined[3], combined[0], combined[1], combined[2])
 
-        # 쿼터니언은 q와 -q가 같은 회전을 나타내므로 부호까지 비교하려면 방향을 맞춘다.
+        # 쿼터니언은 q와 -q가 같은 회전을 나타내므로 부호까지 비교하려면 방향을 맞춰야함. 
         if np.dot(custom, reference_scalar_first) < 0:
             reference_scalar_first = tuple(-c for c in reference_scalar_first)
 
@@ -124,9 +124,7 @@ def test_eci_to_ecef_matches_manual_z_rotation():
     np.testing.assert_allclose(custom, reference, rtol=1e-12)
 
 
-# ---------------------------------------------------------------------------
 # WGS-84 geodetic <-> ECEF
-# ---------------------------------------------------------------------------
 
 def _numpy_geodetic_to_ecef(lat_deg, lon_deg, alt_m):
     lat = np.radians(lat_deg)
