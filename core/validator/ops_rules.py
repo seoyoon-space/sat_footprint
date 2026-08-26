@@ -16,7 +16,7 @@ from typing import Sequence
 
 
 class Status(IntEnum):
-    """심각도 순서를 갖는 상태. 값이 클수록 나쁨 -> max()로 최악 상태를 쉽게 합성 가능."""
+    """심각도 순서. 값이 클수록 나쁨 -> max()로 최악 상태를 쉽게 합성 가능."""
 
     PASS = 0
     WARN = 1
@@ -57,7 +57,7 @@ def evaluate_settling_time(
     warn_multiplier: 정착에 실패했을 때, 마지막 오차가 tolerance의 몇 배 이내면
         WARN으로 완화할지 결정하는 배수 (그 이상이면 FAIL)
 
-    반환된 settling_time은 t0(times[0]) 기준 경과 시간이다.
+    반환된 settling_time은 t0(times[0]) 기준 경과 시간.
     """
     n = len(times)
     if n == 0 or n != len(errors):
@@ -136,7 +136,7 @@ def scan_wheel_saturation(
     max_rpm: 휠의 최대 정격 회전속도 [RPM] (|speed| >= max_rpm이면 FAIL)
     warn_ratio: |speed| >= warn_ratio * max_rpm 이면 WARN
 
-    PASS 상태인 샘플은 이벤트 목록에 포함하지 않는다(경고/포화 구간만 기록).
+    PASS 상태인 샘플은 이벤트 목록에 미포함(경고/포화 구간만 기록).
     """
     if max_rpm <= 0.0:
         raise ValueError("max_rpm must be positive")
