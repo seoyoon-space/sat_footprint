@@ -3,125 +3,66 @@ from __future__ import annotations
 import math
 from datetime import datetime, timezone
 
+from core.math_utils.quat import (
+    Quaternion,
+    Vector3,
+    cross,
+    dot,
+    magnitude,
+    matvec_mul,
+    normalize,
+    quat_from_scalar_last,
+    quat_to_scalar_last,
+    quaternion_multiply,
+    quaternion_normalize,
+    quaternion_to_euler_xyz,
+    rotate_vector_by_quaternion,
+    rotation_matrix_3d,
+)
+
+__all__ = [
+    "dot",
+    "cross",
+    "magnitude",
+    "normalize",
+    "quaternion_normalize",
+    "quaternion_multiply",
+    "quat_from_scalar_last",
+    "rotate_vector_by_quaternion",
+    "pointing_vector_from_quaternion",
+    "rotation_matrix_3d",
+    "matvec_mul",
+    "eci_to_ecef",
+    "ecef_to_eci",
+    "julian_date_from_datetime",
+    "earth_rotation_angle_rad",
+    "quaternion_to_euler_xyz",
+    "quaternion_to_cesium_unit_quaternion",
+    "geodetic_to_ecef",
+    "ecef_to_geodetic",
+    "build_cesium_track_czml",
+]
+
 
 EARTH_ROTATION_RATE_RAD_PER_SEC = 7.2921150e-5
 
+# WGS-84 타원체
+WGS84_A = 6378137.0                       # 장반경 [m]
+WGS84_F = 1.0 / 298.257223563             # 편평률
+WGS84_B = WGS84_A * (1.0 - WGS84_F)       # 단반경 [m]
+WGS84_E2 = WGS84_F * (2.0 - WGS84_F)      # 이심률의 제곱
 
-def _to_float_tuple(values: tuple[float, float, float] | list[float] | tuple[float, ...]) -> tuple[float, float, float]:
+
+def _to_float_tuple(values: Vector3 | list[float] | tuple[float, ...]) -> Vector3:
     if len(values) != 3:
         raise ValueError(f"Expected 3-vector, got {len(values)} values")
     return (float(values[0]), float(values[1]), float(values[2]))
 
 
-def dot(a: tuple[float, float, float] | list[float], b: tuple[float, float, float] | list[float]) -> float:
-    ax, ay, az = _to_float_tuple(a)
-    bx, by, bz = _to_float_tuple(b)
-    return ax * bx + ay * by + az * bz
-
-
-def cross(a: tuple[float, float, float] | list[float], b: tuple[float, float, float] | list[float]) -> tuple[float, float, float]:
-    ax, ay, az = _to_float_tuple(a)
-    bx, by, bz = _to_float_tuple(b)
-    return (ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx)
-
-
-def magnitude(v: tuple[float, float, float] | list[float]) -> float:
-    x, y, z = _to_float_tuple(v)
-    return math.sqrt(x * x + y * y + z * z)
-
-
-def normalize(v: tuple[float, float, float] | list[float]) -> tuple[float, float, float]:
-    m = magnitude(v)
-    if m == 0.0:
-        return (0.0, 0.0, 0.0)
-    x, y, z = _to_float_tuple(v)
-    return (x / m, y / m, z / m)
-
-
-def quaternion_normalize(q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float, float]:
-    if len(q) != 4:
-        raise ValueError(f"Expected quaternion with 4 values, got {len(q)}")
-    qf = tuple(float(v) for v in q)
-    norm = math.sqrt(sum(v * v for v in qf))
-    if norm == 0.0:
-        return (1.0, 0.0, 0.0, 0.0)
-    return tuple(v / norm for v in qf)
-
-
-def quaternion_multiply(q1: tuple[float, float, float, float] | list[float], q2: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float, float]:
-    if len(q1) != 4 or len(q2) != 4:
-        raise ValueError("Quaternion multiplication requires 4-element inputs")
-
-    w1, x1, y1, z1 = (float(v) for v in q1)
-    w2, x2, y2, z2 = (float(v) for v in q2)
-    return (
-        w1 * w2 - x1 * x2 - y1 * y2 - z1 * z2,
-        w1 * x2 + x1 * w2 + y1 * z2 - z1 * y2,
-        w1 * y2 - x1 * z2 + y1 * w2 + z1 * x2,
-        w1 * z2 + x1 * y2 - y1 * x2 + z1 * w2,
-    )
-
-
-def quat_from_scalar_last(q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float, float]:
-    if len(q) != 4:
-        raise ValueError(f"Expected 4 components, got {len(q)}")
-    x, y, z, w = (float(v) for v in q)
-    return (w, x, y, z)
-
-
-def rotate_vector_by_quaternion(vec: tuple[float, float, float] | list[float], q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float]:
-    """Rotate a 3D vector using a scalar-first quaternion (w, x, y, z)."""
-    v = _to_float_tuple(vec)
-    qn = quaternion_normalize(q)
-    w, x, y, z = qn
-    # q * v * q_conj
-    qv = (0.0, v[0], v[1], v[2])
-    q_conj = (w, -x, -y, -z)
-    p = quaternion_multiply(qn, qv)
-    p = quaternion_multiply(p, q_conj)
-    return (p[1], p[2], p[3])
-
-
-def pointing_vector_from_quaternion(q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float]:
+def pointing_vector_from_quaternion(q: Quaternion | list[float]) -> Vector3:
     """Return the body X-axis direction after applying the quaternion in ECI/space-fixed coordinates."""
     v_body_x = (1.0, 0.0, 0.0)
     return rotate_vector_by_quaternion(v_body_x, q)
-
-
-def rotation_matrix_3d(axis: str, angle_rad: float):
-    c = math.cos(angle_rad)
-    s = math.sin(angle_rad)
-    if axis == "x":
-        return ((1.0, 0.0, 0.0), (0.0, c, -s), (0.0, s, c))
-    if axis == "y":
-        return ((c, 0.0, s), (0.0, 1.0, 0.0), (-s, 0.0, c))
-    if axis == "z":
-        return ((c, -s, 0.0), (s, c, 0.0), (0.0, 0.0, 1.0))
-    raise ValueError(f"Unsupported axis '{axis}'")
-
-
-def matvec_mul(matrix, vec):
-    return (
-        matrix[0][0] * vec[0] + matrix[0][1] * vec[1] + matrix[0][2] * vec[2],
-        matrix[1][0] * vec[0] + matrix[1][1] * vec[1] + matrix[1][2] * vec[2],
-        matrix[2][0] * vec[0] + matrix[2][1] * vec[1] + matrix[2][2] * vec[2],
-    )
-
-
-def eci_to_ecef(vec_eci, utc_datetime: datetime) -> tuple[float, float, float]:
-    """Rotate an ECI vector to an ECEF vector using Earth rotation angle for the given UTC time."""
-    if utc_datetime.tzinfo is None:
-        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    gmst = earth_rotation_angle_rad(utc_datetime)
-    return matvec_mul(rotation_matrix_3d("z", gmst), _to_float_tuple(vec_eci))
-
-
-def ecef_to_eci(vec_ecef, utc_datetime: datetime) -> tuple[float, float, float]:
-    """Rotate an ECEF vector to an ECI vector using the inverse Earth rotation angle."""
-    if utc_datetime.tzinfo is None:
-        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    gmst = earth_rotation_angle_rad(utc_datetime)
-    return matvec_mul(rotation_matrix_3d("z", -gmst), _to_float_tuple(vec_ecef))
 
 
 def julian_date_from_datetime(dt: datetime) -> float:
@@ -136,25 +77,89 @@ def julian_date_from_datetime(dt: datetime) -> float:
 def earth_rotation_angle_rad(utc_datetime: datetime) -> float:
     """Approximate Greenwich sidereal angle in radians using the J2000 convention."""
     jd = julian_date_from_datetime(utc_datetime)
-    # GMST approximation in radians
     radians_per_day = 2.0 * math.pi
     gmst_days = 0.7790572732640 + 1.00273781191135448 * ((jd - 2451545.0) % 1.0)
     return radians_per_day * gmst_days
 
 
-def quaternion_to_euler_xyz(q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float]:
-    """Convert scalar-first quaternion to Euler angles in radians using XYZ sequence."""
-    w, x, y, z = quaternion_normalize(q)
-    roll = math.atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y))
-    pitch = math.asin(max(-1.0, min(1.0, 2.0 * (w * y - z * x))))
-    yaw = math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
-    return (roll, pitch, yaw)
+def eci_to_ecef(vec_eci, utc_datetime: datetime) -> Vector3:
+    """Rotate an ECI vector to an ECEF vector using Earth rotation angle for the given UTC time."""
+    if utc_datetime.tzinfo is None:
+        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
+    gmst = earth_rotation_angle_rad(utc_datetime)
+    return matvec_mul(rotation_matrix_3d("z", gmst), _to_float_tuple(vec_eci))
 
 
-def quaternion_to_cesium_unit_quaternion(q: tuple[float, float, float, float] | list[float]) -> tuple[float, float, float, float]:
+def ecef_to_eci(vec_ecef, utc_datetime: datetime) -> Vector3:
+    """Rotate an ECEF vector to an ECI vector using the inverse Earth rotation angle."""
+    if utc_datetime.tzinfo is None:
+        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
+    gmst = earth_rotation_angle_rad(utc_datetime)
+    return matvec_mul(rotation_matrix_3d("z", -gmst), _to_float_tuple(vec_ecef))
+
+
+def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float = 0.0) -> Vector3:
+    """WGS-84 측지좌표(위도/경도/고도) -> ECEF 직교좌표 [m]."""
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    sin_lat, cos_lat = math.sin(lat), math.cos(lat)
+    sin_lon, cos_lon = math.sin(lon), math.cos(lon)
+
+    # 수직 방향 곡률 반경 
+    n = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+
+    x = (n + alt_m) * cos_lat * cos_lon
+    y = (n + alt_m) * cos_lat * sin_lon
+    z = (n * (1.0 - WGS84_E2) + alt_m) * sin_lat
+    return (x, y, z)
+
+
+def ecef_to_geodetic(vec_ecef: Vector3 | list[float], *, max_iter: int = 8, tol_m: float = 1e-9) -> tuple[float, float, float]:
+    """WGS-84 ECEF 직교좌표 -> 측지좌표(위도 deg, 경도 deg, 고도 m).
+
+    Bowring의 초기값으로 시작해 parametric latitude를 소수 회반복 보정하는 방식. 
+    지표면 근방 고도 범위에서 mm 이하 정확도로 수렴하며,
+    닫힌해가 없는 정확한 반복법이므로 scipy 없이도 안정적으로 동작.
+    """
+    x, y, z = _to_float_tuple(vec_ecef)
+    lon = math.atan2(y, x)
+
+    p = math.hypot(x, y)
+    if p < 1e-9:
+        # 극점 부근: 경도는 정의되지 않으므로 0으로 두고 위도만 처리
+        lat = math.copysign(math.pi / 2.0, z) if z != 0.0 else 0.0
+        alt = abs(z) - WGS84_B
+        return (math.degrees(lat), math.degrees(lon), alt)
+
+    # Bowring 초기 추정치
+    theta = math.atan2(z * WGS84_A, p * WGS84_B)
+    ep2 = (WGS84_A * WGS84_A - WGS84_B * WGS84_B) / (WGS84_B * WGS84_B)
+    lat = math.atan2(
+        z + ep2 * WGS84_B * math.sin(theta) ** 3,
+        p - WGS84_E2 * WGS84_A * math.cos(theta) ** 3,
+    )
+
+    n = WGS84_A
+    for _ in range(max_iter):
+        sin_lat = math.sin(lat)
+        n = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+        alt = p / math.cos(lat) - n
+        lat_new = math.atan2(z, p * (1.0 - WGS84_E2 * n / (n + alt)))
+        if abs(lat_new - lat) < tol_m / WGS84_A:
+            lat = lat_new
+            break
+        lat = lat_new
+
+    sin_lat = math.sin(lat)
+    n = WGS84_A / math.sqrt(1.0 - WGS84_E2 * sin_lat * sin_lat)
+    alt = p / math.cos(lat) - n
+
+    return (math.degrees(lat), math.degrees(lon), alt)
+
+
+def quaternion_to_cesium_unit_quaternion(q: Quaternion | list[float]) -> Quaternion:
     """Return the quaternion in the order Cesium expects for CZML unitQuaternion: [x, y, z, w]."""
-    qn = quaternion_normalize(q)
-    return (float(qn[1]), float(qn[2]), float(qn[3]), float(qn[0]))
+    return quat_to_scalar_last(quaternion_normalize(q))
 
 
 def build_cesium_track_czml(
@@ -191,12 +196,16 @@ def build_cesium_track_czml(
     orientation_entries = []
     pointing_entries = []
 
+    has_position = all(c in df.columns for c in position_cols)
+    has_orientation = all(c in df.columns for c in orientation_cols)
+    has_pointing = bool(pointing_col) and pointing_col in df.columns
+
     for row in df.itertuples(index=False):
         ts = getattr(row, time_col)
         ts_dt = pd.Timestamp(ts).tz_convert("UTC") if not isinstance(ts, (int, float)) else pd.to_datetime(ts, unit="s", utc=True)
         offset_seconds = (ts_dt - epoch).total_seconds()
 
-        if all(c in df.columns for c in position_cols):
+        if has_position:
             x = float(getattr(row, position_cols[0]))
             y = float(getattr(row, position_cols[1]))
             z = float(getattr(row, position_cols[2]))
@@ -204,7 +213,7 @@ def build_cesium_track_czml(
                 x, y, z = eci_to_ecef((x, y, z), ts_dt.to_pydatetime())
             pos_entries.extend([offset_seconds, x, y, z])
 
-        if all(c in df.columns for c in orientation_cols):
+        if has_orientation:
             q = (
                 float(getattr(row, orientation_cols[0])),
                 float(getattr(row, orientation_cols[1])),
@@ -214,7 +223,7 @@ def build_cesium_track_czml(
             xq, yq, zq, wq = quaternion_to_cesium_unit_quaternion(q)
             orientation_entries.extend([offset_seconds, xq, yq, zq, wq])
 
-        if pointing_col and pointing_col in df.columns:
+        if has_pointing:
             ptr = getattr(row, pointing_col)
             if ptr is not None:
                 if isinstance(ptr, (list, tuple)) and len(ptr) == 3:
