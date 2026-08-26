@@ -40,7 +40,7 @@ def intersect_wgs84_ellipsoid(
     타원체 방정식 x^2/a^2 + y^2/a^2 + z^2/b^2 = 1 에 광선 방정식을 대입하면
     t에 대한 2차방정식 A*t^2 + B*t + C = 0 이 되며, t>=0인 실근 중 가장 작은
     값이 위성에서 지표면을 내려다볼 때 처음 만나는 지점이다. 실근이 없으면
-    광선이 지구를 비켜가는 경우(지평선 너머를 보는 경우)이므로 None을 반환한다.
+    광선이 지구를 비켜가는 경우(지평선 너머를 보는 경우)이므로 None 반환.
     """
     ox, oy, oz = origin_ecef
     dx, dy, dz = normalize(direction_ecef)
@@ -97,8 +97,8 @@ def fov_corner_rays_body(
     """바디 프레임 기준 카메라 시야각(FOV) 네 모서리 방향 벡터를 계산.
 
     boresight를 중심으로 직교하는 right/up 축을 만들고, 각 축 기준으로
-    Rodrigues 회전을 두 번 합성해(피치 -> 요) 모서리 광선을 구한다.
-    반환 순서는 폴리곤 링으로 바로 쓸 수 있도록 (-x,-y)->(+x,-y)->(+x,+y)->(-x,+y) 순서.
+    Rodrigues 회전을 두 번 합성해(피치 -> 요) 모서리 광선 계산
+    반환 순서는 폴리곤 링으로 바로 가능하도록, (-x,-y)->(+x,-y)->(+x,+y)->(-x,+y) 순서.
     """
     boresight = normalize(boresight_body)
     reference = up_hint if abs(dot(boresight, up_hint)) < 0.999 else (0.0, 1.0, 0.0)
@@ -127,7 +127,7 @@ def compute_footprint(
     """카메라 FOV의 지상 풋프린트(중심점 + 네 모서리)를 위경도(lon, lat)로 계산.
 
     지평선 너머를 바라보는 광선은 None으로 남기고, `visible`이 False이면
-    FOV의 일부(또는 전부)가 지구를 비켜가고 있다는 뜻이다.
+    FOV의 일부(또는 전부)가 지구를 비켜가고 있다는 뜻.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
