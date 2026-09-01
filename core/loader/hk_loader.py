@@ -96,15 +96,15 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
             dt = dt.replace(tzinfo=KST)
         return int(dt.astimezone(timezone.utc).timestamp())
 
-    text = str(value).strip()
-    if not text:
+    text_value = str(value).strip()
+    if not text_value:
         raise ValueError("time value is empty")
 
-    if text.isdigit():
-        return int(text)
+    if text_value.isdigit():
+        return int(text_value)
 
-    if len(text) == 10 and text.count("-") == 2 and text[4] == "-" and text[7] == "-":
-        dt = datetime.fromisoformat(text)
+    if len(text_value) == 10 and text_value.count("-") == 2 and text_value[4] == "-" and text_value[7] == "-":
+        dt = datetime.fromisoformat(text_value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=KST)
         if is_end:
@@ -113,10 +113,25 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
             dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
         return int(dt.astimezone(timezone.utc).timestamp())
 
-    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KST)
     return int(dt.astimezone(timezone.utc).timestamp())
+
+
+def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: float) -> dict[str, float]:
+    """패킷별 asof-merge 허용 오차를 PacketSpec.rate_hz로부터 계산.
+
+    송신 주기가 느린 패킷은 허용 오차도 그만큼 넓혀야 매칭 실패로 인한 불필요한
+    NaN을 피할 수 있다. 패킷 주기(1/rate_hz)의 절반을 자연스러운 최소 허용 오차로
+    보고, 사용자가 지정한 merge_tolerance_sec보다 더 넓게 필요한 패킷에 한해서만
+    override한다(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
+    """
+    return {
+        name: max(merge_tolerance_sec, 0.5 / HK_PACKET_SCHEMA[name].rate_hz)
+        for name in packet_names
+        if HK_PACKET_SCHEMA[name].rate_hz > 0
+    }
 
 
 class HKLoader:
@@ -297,11 +312,14 @@ class HKLoader:
                 "Cannot establish a common timebase."
             )
 
+        tolerance_overrides = _build_tolerance_overrides(packet_names, merge_tolerance_sec)
+
         merged = merge_packets(
             packet_frames,
             master_key=MASTER_PACKET,
             tolerance_sec=merge_tolerance_sec,
             interpolate_gaps=interpolate_gaps,
+            tolerance_overrides=tolerance_overrides,
         )
 
         merged = slice_time_range(merged, start_epoch, end_epoch)
@@ -344,8 +362,8 @@ def _default_output_path(
         start_dt = pd.Timestamp(_normalize_query_time(start_time, is_end=False), unit="s", tz="UTC")
         end_dt = pd.Timestamp(_normalize_query_time(end_time, is_end=True), unit="s", tz="UTC")
     except Exception:
-        start_dt = pd.Timestamp.utcnow().tz_localize("UTC")
-        end_dt = pd.Timestamp.utcnow().tz_localize("UTC")
+        start_dt = pd.Timestamp.now("UTC")
+        end_dt = pd.Timestamp.now("UTC")
 
     start_label = start_dt.strftime("%Y%m%dT%H%M%S")
     end_label = end_dt.strftime("%Y%m%dT%H%M%S")
