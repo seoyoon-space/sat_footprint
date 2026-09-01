@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from core.coordinates import (
     build_cesium_track_czml,
@@ -18,6 +19,7 @@ from core.coordinates import (
     rotate_vector_by_quaternion,
 )
 from core.loader.hk_loader import (
+    _build_tolerance_overrides,
     _normalize_query_time,
     _write_csv_output,
     _write_text_output,
@@ -25,7 +27,7 @@ from core.loader.hk_loader import (
     extract_attitude_columns,
     _write_czml_output,
 )
-from core.loader.schema_map import HK_PACKET_SCHEMA
+from core.loader.schema_map import HK_PACKET_SCHEMA, PacketSpec
 from core.loader.time_sync import merge_packets, slice_time_range
 
 
@@ -133,6 +135,84 @@ def test_merge_packets_skips_object_columns_during_interpolation():
     assert "value" in merged.columns
     assert "hk_file_name_hk2" in merged.columns
     assert merged["value"].notna().all()
+
+
+def test_merge_packets_max_interp_gap_sec_blocks_large_gaps():
+    """time_sync.py의 max_interp_gap_sec: 이 값보다 큰 결측 구간은 보간하지 않고 NaN 유지."""
+    # 0초와 100초 지점만 실측값이 있고 그 사이(20/40/60/80초)는 전부 결측인 100초짜리 큰 갭
+    hk1 = pd.DataFrame(
+        {
+            "time": _ts([0, 20, 40, 60, 80, 100]),
+            "value": [1.0, None, None, None, None, 7.0],
+        }
+    )
+
+    # 갭(100초)이 max_interp_gap_sec(10초)보다 크므로 중간 지점은 보간되지 않고 NaN으로 남아야 함
+    merged_blocked = merge_packets(
+        {"hk1": hk1}, master_key="hk1", tolerance_sec=1.0, interpolate_gaps=True, max_interp_gap_sec=10.0
+    )
+    assert merged_blocked["value"].isna().sum() == 4
+    assert merged_blocked["value"].iloc[[0, 5]].notna().all()
+
+    # max_interp_gap_sec을 갭보다 크게 주면 정상적으로 시간 기반 선형보간
+    merged_allowed = merge_packets(
+        {"hk1": hk1}, master_key="hk1", tolerance_sec=1.0, interpolate_gaps=True, max_interp_gap_sec=200.0
+    )
+    assert merged_allowed["value"].notna().all()
+    np.testing.assert_allclose(merged_allowed["value"].to_numpy(), [1.0, 2.2, 3.4, 4.6, 5.8, 7.0])
+
+    # max_interp_gap_sec=None이면 갭 크기와 무관하게 항상 보간(기존 동작과 동일)
+    merged_unlimited = merge_packets(
+        {"hk1": hk1}, master_key="hk1", tolerance_sec=1.0, interpolate_gaps=True, max_interp_gap_sec=None
+    )
+    assert merged_unlimited["value"].notna().all()
+    np.testing.assert_allclose(merged_unlimited["value"].to_numpy(), [1.0, 2.2, 3.4, 4.6, 5.8, 7.0])
+
+
+def test_merge_packets_tolerance_overrides_widens_slow_packet_matching():
+    """time_sync.py의 tolerance_overrides: 패킷별로 asof-merge 허용 오차를 다르게 줄 수 있어야 함."""
+    hk1 = pd.DataFrame({"time": _ts([0, 2, 4, 6, 8, 10]), "value": [1.0] * 6})
+    # hk2는 10초 주기로만 송신(0초, 10초 두 샘플뿐)하는 느린 패킷을 흉내
+    hk2 = pd.DataFrame({"time": _ts([0, 10]), "slow_value": [100.0, 200.0]})
+
+    # 전역 tolerance_sec=1.0으로는 중간 지점들이 전부 매칭 실패 -> NaN
+    merged_default = merge_packets(
+        {"hk1": hk1, "hk2": hk2}, master_key="hk1", tolerance_sec=1.0, interpolate_gaps=False
+    )
+    assert merged_default["slow_value"].isna().sum() == 4
+
+    # hk2에만 5초 허용 오차를 override하면 모든 마스터 타임스탬프가 가장 가까운
+    # hk2 샘플과 매칭됨(전역 tolerance_sec은 override 없는 패킷에 그대로 유지)
+    merged_overridden = merge_packets(
+        {"hk1": hk1, "hk2": hk2},
+        master_key="hk1",
+        tolerance_sec=1.0,
+        interpolate_gaps=False,
+        tolerance_overrides={"hk2": 5.0},
+    )
+    assert merged_overridden["slow_value"].notna().all()
+    np.testing.assert_allclose(
+        merged_overridden["slow_value"].to_numpy(), [100.0, 100.0, 100.0, 200.0, 200.0, 200.0]
+    )
+
+
+def test_build_tolerance_overrides_uses_rate_hz_with_merge_tolerance_as_floor(monkeypatch):
+    """hk_loader._build_tolerance_overrides: PacketSpec.rate_hz -> 패킷별 허용 오차(초).
+
+    느린 패킷(0.1Hz = 10초 주기)은 절반 주기(5초)로 넓어지고, 빠른 패킷(10Hz)은
+    자연 허용치(0.05초)가 사용자 지정 merge_tolerance_sec보다 좁으므로
+    merge_tolerance_sec 그대로 유지(하한으로 동작).
+    """
+    fake_schema = {
+        "slow": PacketSpec(table="t_slow", time_col="timeUtc", fields={}, rate_hz=0.1),
+        "fast": PacketSpec(table="t_fast", time_col="timeUtc", fields={}, rate_hz=10.0),
+    }
+    monkeypatch.setattr("core.loader.hk_loader.HK_PACKET_SCHEMA", fake_schema)
+
+    overrides = _build_tolerance_overrides(["slow", "fast"], merge_tolerance_sec=1.0)
+
+    assert overrides["slow"] == pytest.approx(5.0)
+    assert overrides["fast"] == pytest.approx(1.0)
 
 
 def test_real_o1b_hk_schema_contains_expected_columns():
@@ -244,15 +324,13 @@ def test_custom_math_matches_numpy_reference():
     custom_rot = rotate_vector_by_quaternion(vec, q1)
     np.testing.assert_allclose(custom_rot, ref_rot, rtol=1e-9, atol=1e-9)
 
+    # eci_to_ecef는 이제 세차+장동+겉보기항성시를 적용한 회전 합성이라 단순 Z축 회전과
+    # 더 이상 같지 않다(core/coordinates.py의 세차/장동 근사 참고). 여기서는 numpy로
+    # "순수 회전 합성이면 노름이 보존되어야 한다"는 성질만 교차검증한다.
     dt = pd.Timestamp("2026-08-20T00:00:00Z").to_pydatetime()
-    angle = earth_rotation_angle_rad(dt)
-    ref_ecef = np.array([
-        np.cos(angle),
-        np.sin(angle),
-        0.0,
-    ])
-    custom_ecef = np.asarray(eci_to_ecef((1.0, 0.0, 0.0), dt), dtype=float)
-    np.testing.assert_allclose(custom_ecef, ref_ecef, rtol=1e-9, atol=1e-9)
+    v_eci = (7000e3, 1234e3, -555e3)
+    custom_ecef = np.asarray(eci_to_ecef(v_eci, dt), dtype=float)
+    np.testing.assert_allclose(np.linalg.norm(custom_ecef), np.linalg.norm(v_eci), rtol=1e-12)
 
 
 def test_extract_attitude_columns_creates_standardized_output():

@@ -18,6 +18,7 @@ from core.math_utils.quat import (
     quaternion_to_euler_xyz,
     rotate_vector_by_quaternion,
     rotation_matrix_3d,
+    transpose3x3,
 )
 
 __all__ = [
@@ -74,28 +75,167 @@ def julian_date_from_datetime(dt: datetime) -> float:
     return 2451545.0 + delta_days
 
 
+ARCSEC_TO_RAD = math.pi / (180.0 * 3600.0)
+
+
 def earth_rotation_angle_rad(utc_datetime: datetime) -> float:
-    """Approximate Greenwich sidereal angle in radians using the J2000 convention."""
+    """Greenwich Mean Sidereal Time(GMST), IAU-82 다항식(Vallado, *Fundamentals of
+    Astrodynamics and Applications*, 2013, Eq. 3-43 / gstime.m과 동일 공식).
+
+    IERS 관측 데이터(UT1-UTC 보정치)가 없어 입력 UTC를 UT1로 근사한다.
+    이로 인한 잔여오차는 |UT1-UTC| <= 0.9s -> 각도 오차 <= 약 13.5각초 수준이며,
+    IERS 공표 데이터를 실시간으로 받아오지 않는 한 이 오차는 원리적으로 해소 불가하다.
+    """
+    if utc_datetime.tzinfo is None:
+        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
     jd = julian_date_from_datetime(utc_datetime)
-    radians_per_day = 2.0 * math.pi
-    gmst_days = 0.7790572732640 + 1.00273781191135448 * ((jd - 2451545.0) % 1.0)
-    return radians_per_day * gmst_days
+    tut1 = (jd - 2451545.0) / 36525.0
+
+    # 시간초 단위 다항식. 360도/86400초 = 1/240 (도/초)로 각도 변환.
+    temp_sec = (
+        -6.2e-6 * tut1 * tut1 * tut1
+        + 0.093104 * tut1 * tut1
+        + (876600.0 * 3600.0 + 8640184.812866) * tut1
+        + 67310.54841
+    )
+    return math.radians(temp_sec / 240.0) % (2.0 * math.pi)
+
+
+def _julian_centuries_j2000(utc_datetime: datetime) -> float:
+    """J2000.0(TT) 기준 율리우스 세기 수. UTC와 TT의 차이(2026년 기준 약 69초)는
+    100년 단위 T값에 10^-8 수준의 영향만 주므로 무시하고 UTC로 근사한다."""
+    jd = julian_date_from_datetime(utc_datetime)
+    return (jd - 2451545.0) / 36525.0
+
+
+def _mean_obliquity_rad(t: float) -> float:
+    """평균 황도경사각(mean obliquity of the ecliptic), IAU 1980 모델.
+
+    84381.448" - 46.8150"T - 0.00059"T^2 + 0.001813"T^3  (Vallado precess.m, opt='80'의 'ea').
+    """
+    arcsec = 84381.448 - 46.8150 * t - 0.00059 * t * t + 0.001813 * t ** 3
+    return arcsec * ARCSEC_TO_RAD
+
+
+def _nutation_angles_rad(t: float) -> tuple[float, float, float]:
+    """장동각(delta_psi, delta_eps)과 오메가(달 궤도 승교점 황경)를 저정밀도 공식으로 계산.
+
+    IAU 1980 이론의 106항 전체 급수 대신, 지배적인 4개 항만 사용하는 Meeus의
+    저정밀도(Low Accuracy) 공식(Jean Meeus, *Astronomical Algorithms* 2nd ed., Ch.22)을
+    적용한다. 정확도: delta_psi 오차 < 0.5", delta_eps 오차 < 0.1" (수 세기 범위에서).
+    세차(연간 약 50", 이 텔레메트리 기준 26년 누적 시 약 20분각)에 비해 장동은 훨씬
+    작고 주기적(비누적)이라, 이 근사만으로도 세차 미보정으로 인한 큰 계통오차는 해소된다.
+    """
+    omega = math.radians(125.04452 - 1934.136261 * t)
+    l_sun = math.radians(280.4665 + 36000.7698 * t)
+    l_moon = math.radians(218.3165 + 481267.8813 * t)
+
+    delta_psi_arcsec = (
+        -17.20 * math.sin(omega)
+        - 1.32 * math.sin(2.0 * l_sun)
+        - 0.23 * math.sin(2.0 * l_moon)
+        + 0.21 * math.sin(2.0 * omega)
+    )
+    delta_eps_arcsec = (
+        9.20 * math.cos(omega)
+        + 0.57 * math.cos(2.0 * l_sun)
+        + 0.10 * math.cos(2.0 * l_moon)
+        - 0.09 * math.cos(2.0 * omega)
+    )
+    return delta_psi_arcsec * ARCSEC_TO_RAD, delta_eps_arcsec * ARCSEC_TO_RAD, omega
+
+
+def _precession_matrix_eci_to_mod(t: float):
+    """세차 행렬(ECI/GCRF(J2000 평균 적도/분점) -> MOD(당일 평균 적도/분점)).
+
+    IAU 1976 세차각 zeta/theta/z 공식 및 행렬 구성은 Vallado precess.m(opt='80')과 동일.
+    원본은 MOD->ECI 방향으로 구성되므로, 필요한 반대 방향은 전치로 얻는다.
+    """
+    t2 = t * t
+    t3 = t2 * t
+    zeta = (2306.2181 * t + 0.30188 * t2 + 0.017998 * t3) * ARCSEC_TO_RAD
+    theta = (2004.3109 * t - 0.42665 * t2 - 0.041833 * t3) * ARCSEC_TO_RAD
+    z = (2306.2181 * t + 1.09468 * t2 + 0.018203 * t3) * ARCSEC_TO_RAD
+
+    cz, sz = math.cos(zeta), math.sin(zeta)
+    ct, st = math.cos(theta), math.sin(theta)
+    cZ, sZ = math.cos(z), math.sin(z)
+
+    mod_to_eci = (
+        (cz * ct * cZ - sz * sZ, cz * ct * sZ + sz * cZ, cz * st),
+        (-sz * ct * cZ - cz * sZ, -sz * ct * sZ + cz * cZ, -sz * st),
+        (-st * cZ, -st * sZ, ct),
+    )
+    return transpose3x3(mod_to_eci)
+
+
+def _nutation_matrix_mod_to_tod(delta_psi: float, mean_eps: float, true_eps: float):
+    """장동 행렬(MOD(당일 평균 적도/분점) -> TOD(당일 진 적도/분점)).
+
+    행렬 구성은 Vallado nutation.m과 동일(원본은 TOD->MOD 방향이므로 전치해서 사용).
+    """
+    cospsi, sinpsi = math.cos(delta_psi), math.sin(delta_psi)
+    coseps, sineps = math.cos(mean_eps), math.sin(mean_eps)
+    ctrueeps, strueeps = math.cos(true_eps), math.sin(true_eps)
+
+    tod_to_mod = (
+        (cospsi, ctrueeps * sinpsi, strueeps * sinpsi),
+        (-coseps * sinpsi, ctrueeps * coseps * cospsi + strueeps * sineps, strueeps * coseps * cospsi - sineps * ctrueeps),
+        (-sineps * sinpsi, ctrueeps * sineps * cospsi - strueeps * coseps, strueeps * sineps * cospsi + ctrueeps * coseps),
+    )
+    return transpose3x3(tod_to_mod)
+
+
+def _apparent_sidereal_time_rad(utc_datetime: datetime, delta_psi: float, mean_eps: float, omega: float) -> float:
+    """겉보기항성시(GAST) = GMST + 분점방정식(equation of the equinoxes).
+
+    1997년 이후(Vallado sidereal.m 기준 jd > 2450449.5)에는 운동학적 보정항까지 포함한다.
+    """
+    gmst = earth_rotation_angle_rad(utc_datetime)
+    jd = julian_date_from_datetime(utc_datetime)
+    eqe = delta_psi * math.cos(mean_eps)
+    if jd > 2450449.5:
+        eqe += (0.00264 * math.sin(omega) + 0.000063 * math.sin(2.0 * omega)) * ARCSEC_TO_RAD
+    return (gmst + eqe) % (2.0 * math.pi)
+
+
+def _earth_orientation_matrices(utc_datetime: datetime):
+    """주어진 시각의 (세차 행렬(ECI->MOD), 장동 행렬(MOD->TOD), 겉보기항성시(rad))을 계산."""
+    t = _julian_centuries_j2000(utc_datetime)
+    mean_eps = _mean_obliquity_rad(t)
+    delta_psi, delta_eps, omega = _nutation_angles_rad(t)
+    true_eps = mean_eps + delta_eps
+    ast = _apparent_sidereal_time_rad(utc_datetime, delta_psi, mean_eps, omega)
+    eci_to_mod = _precession_matrix_eci_to_mod(t)
+    mod_to_tod = _nutation_matrix_mod_to_tod(delta_psi, mean_eps, true_eps)
+    return eci_to_mod, mod_to_tod, ast
 
 
 def eci_to_ecef(vec_eci, utc_datetime: datetime) -> Vector3:
-    """Rotate an ECI vector to an ECEF vector using Earth rotation angle for the given UTC time."""
+    """ECI(GCRF/J2000 평균 적도/분점) 벡터 -> ECEF(ITRF 근사) 벡터.
+
+    IAU-76/FK5 축약 모델(세차 + 장동(저정밀도) + 겉보기항성시)을 적용한다. 극운동(polar
+    motion)은 IERS 관측치가 없어 생략(영향 < 0.1"로 무시 가능). 잔여오차는 주로
+    UT1-UTC 미보정(<= 약 13.5")에서 오며, LEO(~700km) 환산 시 지상 오차 <= 수십 m 수준이다.
+    """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    gmst = earth_rotation_angle_rad(utc_datetime)
-    return matvec_mul(rotation_matrix_3d("z", gmst), _to_float_tuple(vec_eci))
+    eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
+    v = matvec_mul(eci_to_mod, _to_float_tuple(vec_eci))
+    v = matvec_mul(mod_to_tod, v)
+    v = matvec_mul(rotation_matrix_3d("z", -ast), v)
+    return v
 
 
 def ecef_to_eci(vec_ecef, utc_datetime: datetime) -> Vector3:
-    """Rotate an ECEF vector to an ECI vector using the inverse Earth rotation angle."""
+    """ECEF(ITRF 근사) 벡터 -> ECI(GCRF/J2000 평균 적도/분점) 벡터. eci_to_ecef의 역변환."""
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    gmst = earth_rotation_angle_rad(utc_datetime)
-    return matvec_mul(rotation_matrix_3d("z", -gmst), _to_float_tuple(vec_ecef))
+    eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
+    v = matvec_mul(rotation_matrix_3d("z", ast), _to_float_tuple(vec_ecef))
+    v = matvec_mul(transpose3x3(mod_to_tod), v)
+    v = matvec_mul(transpose3x3(eci_to_mod), v)
+    return v
 
 
 def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float = 0.0) -> Vector3:

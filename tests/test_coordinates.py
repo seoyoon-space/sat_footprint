@@ -17,6 +17,7 @@ from scipy.spatial.transform import Rotation
 from core.coordinates import (
     WGS84_A,
     WGS84_B,
+    earth_rotation_angle_rad,
     ecef_to_geodetic,
     eci_to_ecef,
     geodetic_to_ecef,
@@ -28,6 +29,7 @@ from core.math_utils.quat import (
     cross,
     dot,
     magnitude,
+    matvec_mul,
     normalize,
     quat_to_scalar_last,
     quaternion_normalize,
@@ -108,20 +110,47 @@ def test_quaternion_to_cesium_unit_quaternion_is_scalar_last():
     assert cesium_q == (q[1], q[2], q[3], q[0])
 
 
-def test_eci_to_ecef_matches_manual_z_rotation():
-    dt = __import__("datetime").datetime(2026, 8, 20, 0, 0, 0, tzinfo=__import__("datetime").timezone.utc)
-    from core.coordinates import earth_rotation_angle_rad
+def test_eci_ecef_round_trip_and_norm_preserved():
+    """eci_to_ecef/ecef_to_eci는 (근사)직교 회전 합성이므로 왕복 시 원값 복원, 노름 불변."""
+    from datetime import datetime, timezone
 
-    angle = earth_rotation_angle_rad(dt)
-    v_eci = (7000e3, 0.0, 0.0)
+    from core.coordinates import ecef_to_eci
 
-    custom = eci_to_ecef(v_eci, dt)
-    reference = (
-        v_eci[0] * math.cos(angle) - v_eci[1] * math.sin(angle),
-        v_eci[0] * math.sin(angle) + v_eci[1] * math.cos(angle),
-        v_eci[2],
-    )
-    np.testing.assert_allclose(custom, reference, rtol=1e-12)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+    v_eci = (7000e3, 1234e3, -555e3)
+
+    v_ecef = eci_to_ecef(v_eci, dt)
+    back = ecef_to_eci(v_ecef, dt)
+
+    np.testing.assert_allclose(back, v_eci, atol=1e-6)
+    np.testing.assert_allclose(np.linalg.norm(v_ecef), np.linalg.norm(v_eci), rtol=1e-12)
+
+
+def test_eci_ecef_rotation_sign_matches_greenwich_meridian_physics():
+    """ECI<->ECEF 회전 방향(부호) 검증: 그리니치 자오선(ECEF +x축)에 고정된 점은
+    ECI 기준으로 적경(RA) ~= GMST 방향을 가리켜야 한다(항성시의 정의 자체가 그렇다).
+
+    과거에는 eci_to_ecef가 반대 부호로 회전해 위성 지상궤적이 잘못된 경도에 표시되는
+    버그가 있었는데, 이 관계로만 정확히 잡아낼 수 있다(위도만 보는 테스트나 자기 자신의
+    각도 계산을 그대로 재사용하는 self-consistency 테스트는 부호 오류를 못 잡는다).
+    허용 오차는 세차(연 ~50", 수십 년 누적 시 최대 1도 미만) 규모로 넉넉히 잡는다.
+    """
+    from datetime import datetime, timezone
+
+    from core.coordinates import ecef_to_eci
+
+    for dt in (
+        datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc),  # J2000 epoch 근방(세차~0)
+        datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
+        datetime(2040, 3, 15, 6, 30, 0, tzinfo=timezone.utc),
+    ):
+        gmst_deg = math.degrees(earth_rotation_angle_rad(dt))
+        greenwich_ecef = (WGS84_A, 0.0, 0.0)
+        eci_pt = ecef_to_eci(greenwich_ecef, dt)
+        ra_deg = math.degrees(math.atan2(eci_pt[1], eci_pt[0])) % 360.0
+
+        diff = (ra_deg - gmst_deg + 180.0) % 360.0 - 180.0
+        assert abs(diff) < 1.0, f"{dt}: RA({ra_deg}) should track GMST({gmst_deg}) within ~1 deg, got diff={diff}"
 
 
 # WGS-84 geodetic <-> ECEF
@@ -185,3 +214,59 @@ def test_ecef_to_geodetic_north_pole():
     lat, lon, alt = ecef_to_geodetic((0.0, 0.0, WGS84_B))
     assert lat == pytest.approx(90.0, abs=1e-9)
     assert alt == pytest.approx(0.0, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# 세차/장동/겉보기항성시(IAU-76/FK5 축약 모델) - 물리적 크기 범위 검증
+# ---------------------------------------------------------------------------
+
+def test_mean_obliquity_within_known_physical_range():
+    from core.coordinates import _mean_obliquity_rad
+
+    # 평균 황도경사각은 J2000 부근에서 약 23.4392794도이며, 세기당 약 47" 씩 서서히 감소
+    for t_centuries in (-1.0, 0.0, 1.0):
+        eps_deg = math.degrees(_mean_obliquity_rad(t_centuries))
+        assert 23.0 < eps_deg < 23.6, f"T={t_centuries}: mean obliquity {eps_deg} deg out of expected range"
+
+    eps_j2000 = math.degrees(_mean_obliquity_rad(0.0))
+    assert eps_j2000 == pytest.approx(23.4392911, abs=1e-4)
+
+
+def test_nutation_angles_within_known_physical_bounds():
+    from core.coordinates import _nutation_angles_rad
+
+    for t_centuries in (-2.0, -0.5, 0.0, 0.5, 2.0):
+        delta_psi, delta_eps, omega = _nutation_angles_rad(t_centuries)
+        # 장동의 지배항(주기 ~18.6년)의 진폭은 각각 최대 약 17.2", 9.2" 수준이며,
+        # 저정밀도 4항 공식의 합도 이 범위를 크게 벗어날 수 없다.
+        assert abs(math.degrees(delta_psi) * 3600.0) < 20.0
+        assert abs(math.degrees(delta_eps) * 3600.0) < 11.0
+        # omega(달 궤도 승교점 황경)는 다항식 원값을 그대로 반환하므로(삼각함수 인자로만
+        # 쓰이고 그 자체로는 정규화가 필요 없음) 유한한 실수인지만 확인
+        assert math.isfinite(omega)
+
+
+def test_precession_matrix_is_near_identity_at_j2000_epoch():
+    """T=0(J2000.0 정의 시점) 근방에서는 세차각이 0에 수렴하므로 세차행렬은 항등행렬에 가까워야 함."""
+    from core.coordinates import _precession_matrix_eci_to_mod
+
+    m = _precession_matrix_eci_to_mod(1e-6)  # J2000으로부터 아주 짧은 시간
+    identity_diff = max(
+        abs(m[i][j] - (1.0 if i == j else 0.0)) for i in range(3) for j in range(3)
+    )
+    assert identity_diff < 1e-6
+
+
+def test_precession_matrix_rotation_rate_matches_known_50_arcsec_per_year():
+    """세차의 지배항(zeta+z 선형계수 합)은 약 50.29"/year(황도 세차의 잘 알려진 크기)와 일치해야 함."""
+    from core.coordinates import _precession_matrix_eci_to_mod
+
+    # 1세기(100년) 전후 두 세차행렬로 ECI +x축이 얼마나 회전하는지 측정
+    v = (1.0, 0.0, 0.0)
+    v_now = matvec_mul(_precession_matrix_eci_to_mod(0.0), v)
+    v_1c = matvec_mul(_precession_matrix_eci_to_mod(1.0), v)
+
+    angle_per_century_arcsec = math.degrees(math.acos(max(-1.0, min(1.0, dot(v_now, v_1c))))) * 3600.0
+    # 알려진 세차율: 약 50.29"/year * 100 = 5029"/century (자오선 상 좌표계 회전 관점에서는
+    # 이보다 다소 클 수 있으나 - 실제 회전각은 대략 zeta+z 근방인 4600~5100"/century 범위) 이내인지 확인
+    assert 4000.0 < angle_per_century_arcsec < 6000.0

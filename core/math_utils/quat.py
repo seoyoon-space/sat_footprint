@@ -217,3 +217,12 @@ def matmul(a, b):
         tuple(sum(a[i][k] * b[k][j] for k in range(3)) for j in range(3))
         for i in range(3)
     )
+
+
+def transpose3x3(m):
+    """3x3 행렬 전치. 회전행렬의 전치는 역행렬과 같으므로(직교행렬) 좌표계 역변환에 사용."""
+    return (
+        (m[0][0], m[1][0], m[2][0]),
+        (m[0][1], m[1][1], m[2][1]),
+        (m[0][2], m[1][2], m[2][2]),
+    )

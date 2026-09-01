@@ -141,8 +141,12 @@ def test_boresight_ray_ecef_matches_manual_rotation():
 
     origin, direction = boresight_ray_ecef(sat_pos_eci, identity_q, dt, boresight_body=(-1.0, 0.0, 0.0))
     np.testing.assert_allclose(np.linalg.norm(direction), 1.0, rtol=1e-9)
-    # identity 자세, 시간 회전 후에도 원점은 원래 궤도반경과 같아야 함
-    assert math.hypot(*origin[:2]) + 0 == pytest.approx(math.hypot(sat_pos_eci[0], sat_pos_eci[1]), rel=1e-9)
+    # ECI->ECEF는 (근사)순수 회전이므로 3D 노름(궤도반경)은 정확히 보존되어야 함.
+    # (참고: 세차/장동으로 인한 미세한 축 기울어짐 때문에 XY 평면 성분만의 크기는
+    # 더 이상 정확히 보존되지 않는다 - 2차 오더 효과(z^2/2R 수준, 수십 m)라 3D 노름으로 검증)
+    origin_radius = math.sqrt(sum(c * c for c in origin))
+    expected_radius = math.hypot(sat_pos_eci[0], sat_pos_eci[1])
+    assert origin_radius == pytest.approx(expected_radius, rel=1e-9)
 
 
 def test_footprint_to_geojson_structure():
