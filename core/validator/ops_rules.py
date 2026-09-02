@@ -9,7 +9,6 @@ HK 텔레메트리에서 뽑아낸 시계열(시간 리스트 + 값 리스트)�
 """
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Sequence

@@ -1,6 +1,7 @@
-# API 런타임(core/coordinates.py, core/loader 등)은 numpy/scipy 없이 자체 구현으로 동작.
-# 다만 tests/test_loader.py와 core/dynamics/*(순방향 시뮬레이션 스캐폴딩)는 numpy/scipy를 직접 사용하므로
-# 테스트 실행 및 CI를 위해 여기 포함.
+# 위성 텔레메트리 API 런타임(core/coordinates.py, core/loader 등)은 numpy/scipy 없이
+# 자체 구현으로 동작. 다만 tests/test_loader.py(교차검증용)와 core/dynamics/*(로켓
+# 발사체 GNC 시뮬레이션 - MATLAB 원본 포팅)는 numpy/scipy를 직접 사용하므로
+# 테스트 실행 및 CI를 위해 여기 포함한다.
 #
 # sgp4는 유일한 명시적 예외: core/propagation.py의 TLE 궤도 전파에 사용. SGP4는 WGS-72
 # 경험 상수가 많고 미묘한 엣지케이스(deep-space 공진 등)가 있어 직접 구현 시 조용히

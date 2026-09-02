@@ -8,12 +8,15 @@ from datetime import datetime, timezone
 import numpy as np
 import pytest
 
-from core.coordinates import WGS84_A, WGS84_B, geodetic_to_ecef
+from core.coordinates import WGS84_A, WGS84_B
 from core.geometry.footprint import (
     boresight_ray_ecef,
+    camera_rays_ecef,
     compute_footprint,
     fov_corner_rays_body,
+    footprint_to_czml,
     footprint_to_geojson,
+    footprint_track_to_czml,
     intersect_wgs84_ellipsoid,
 )
 
@@ -92,6 +95,35 @@ def test_fov_corner_rays_are_unit_vectors_and_symmetric():
     # 성립하지 않지만, 각거리는 부호 조합과 무관하게 항상 동일하다.)
     angles = [math.degrees(math.acos(max(-1.0, min(1.0, np.dot(boresight, c))))) for c in corners]
     np.testing.assert_allclose(angles, angles[0], rtol=1e-9)
+
+
+def test_camera_rays_ecef_matches_compute_footprint_intersection():
+    """camera_rays_ecef가 반환하는 원점/방향으로 직접 타원체 교차를 계산하면
+    compute_footprint()의 결과와 정확히 일치해야 한다(compute_footprint은 내부적으로
+    camera_rays_ecef를 재사용하도록 리팩터링됨 - DEM 서버가 광선만 받아 자체 지형과
+    교차시키는 경로가, 이 API가 타원체로 교차시키는 경로와 같은 광선 위에서 출발하는지 검증).
+    """
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+    rays = camera_rays_ecef(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(-1.0, 0.0, 0.0)
+    )
+    assert len(rays["fov_corner_directions_ecef"]) == 4
+    for d in [rays["boresight_direction_ecef"], *rays["fov_corner_directions_ecef"]]:
+        np.testing.assert_allclose(np.linalg.norm(d), 1.0, rtol=1e-9)
+
+    hit = intersect_wgs84_ellipsoid(rays["origin_ecef"], rays["boresight_direction_ecef"])
+    assert hit is not None
+
+    footprint = compute_footprint(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(-1.0, 0.0, 0.0)
+    )
+    from core.coordinates import ecef_to_geodetic
+
+    expected_lat, expected_lon, _ = ecef_to_geodetic(hit)
+    assert footprint["center"] == pytest.approx((expected_lon, expected_lat), abs=1e-9)
 
 
 def test_compute_footprint_nadir_pointing_from_equator():
@@ -173,3 +205,77 @@ def test_footprint_to_geojson_not_visible_has_no_polygon():
     footprint = {"center": None, "corners": [None, None, None, None], "visible": False}
     geojson = footprint_to_geojson(footprint)
     assert geojson["features"] == []
+
+
+def test_footprint_to_czml_structure():
+    footprint = {
+        "center": (10.0, 20.0),
+        "corners": [(9.0, 19.0), (11.0, 19.0), (11.0, 21.0), (9.0, 21.0)],
+        "visible": True,
+    }
+    czml = footprint_to_czml(footprint, properties={"satellite_id": "O1A"})
+
+    assert czml[0] == {"id": "document", "version": "1.0"}
+    assert len(czml) == 3  # document + polygon + center point
+
+    polygon_packet = next(p for p in czml if "polygon" in p)
+    # CZML은 GeoJSON과 달리 폐합점을 반복하지 않음: 4개 코너 * (lon,lat,height) = 12개 값
+    positions = polygon_packet["polygon"]["positions"]["cartographicDegrees"]
+    assert positions == [9.0, 19.0, 0.0, 11.0, 19.0, 0.0, 11.0, 21.0, 0.0, 9.0, 21.0, 0.0]
+    assert polygon_packet["properties"]["satellite_id"] == "O1A"
+
+    point_packet = next(p for p in czml if "point" in p)
+    assert point_packet["position"]["cartographicDegrees"] == [10.0, 20.0, 0.0]
+    assert point_packet["properties"]["role"] == "boresight_center"
+
+
+def test_footprint_to_czml_not_visible_has_no_polygon_packet():
+    footprint = {"center": None, "corners": [None, None, None, None], "visible": False}
+    czml = footprint_to_czml(footprint)
+
+    assert czml == [{"id": "document", "version": "1.0"}]
+
+
+def test_footprint_track_to_czml_scopes_each_sample_with_availability():
+    fp = {
+        "center": (10.0, 20.0),
+        "corners": [(9.0, 19.0), (11.0, 19.0), (11.0, 21.0), (9.0, 21.0)],
+        "visible": True,
+    }
+    fp2 = {
+        "center": (12.0, 20.0),
+        "corners": [(11.0, 19.0), (13.0, 19.0), (13.0, 21.0), (11.0, 21.0)],
+        "visible": True,
+    }
+    samples = [
+        (datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc), fp),
+        (datetime(2026, 8, 20, 0, 0, 10, tzinfo=timezone.utc), fp2),
+    ]
+
+    czml = footprint_track_to_czml(samples, id_prefix="fp")
+
+    assert czml[0] == {"id": "document", "version": "1.0"}
+    # 샘플 2개 * (폴리곤+중심점) = 4개 패킷 + document
+    assert len(czml) == 5
+
+    polygon_0 = next(p for p in czml if p["id"] == "fp_polygon_0")
+    assert polygon_0["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:10Z"
+
+    polygon_1 = next(p for p in czml if p["id"] == "fp_polygon_1")
+    # 마지막 샘플은 default_duration_sec만큼의 구간을 가짐(다음 샘플이 없으므로)
+    assert polygon_1["availability"] == "2026-08-20T00:00:10Z/2026-08-20T00:01:10Z"
+
+
+def test_footprint_track_to_czml_skips_not_visible_samples():
+    visible_fp = {"center": (10.0, 20.0), "corners": [(9, 19), (11, 19), (11, 21), (9, 21)], "visible": True}
+    hidden_fp = {"center": None, "corners": [None, None, None, None], "visible": False}
+    samples = [
+        (datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc), visible_fp),
+        (datetime(2026, 8, 20, 0, 0, 10, tzinfo=timezone.utc), hidden_fp),
+    ]
+
+    czml = footprint_track_to_czml(samples)
+
+    ids = [p["id"] for p in czml]
+    assert "footprint_polygon_0" in ids and "footprint_center_0" in ids
+    assert "footprint_polygon_1" not in ids and "footprint_center_1" not in ids

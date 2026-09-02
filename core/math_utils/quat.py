@@ -189,6 +189,46 @@ def quaternion_to_rotation_matrix(q: Quaternion | list[float]):
     )
 
 
+def rotation_matrix_to_quaternion(m) -> Quaternion:
+    """3x3 회전행렬 -> scalar-first 쿼터니언 (Shepperd's method).
+
+    대각합(trace)이 작을 때 발생하는 수치 불안정을 피하기 위해, 대각 성분 중
+    가장 큰 값을 기준으로 분기해서 계산하는 표준 알고리즘(quaternion_to_rotation_matrix의
+    역연산에 해당).
+    """
+    m00, m01, m02 = m[0]
+    m10, m11, m12 = m[1]
+    m20, m21, m22 = m[2]
+    trace = m00 + m11 + m22
+
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0  # s = 4w
+        w = 0.25 * s
+        x = (m21 - m12) / s
+        y = (m02 - m20) / s
+        z = (m10 - m01) / s
+    elif m00 > m11 and m00 > m22:
+        s = math.sqrt(1.0 + m00 - m11 - m22) * 2.0  # s = 4x
+        w = (m21 - m12) / s
+        x = 0.25 * s
+        y = (m01 + m10) / s
+        z = (m02 + m20) / s
+    elif m11 > m22:
+        s = math.sqrt(1.0 + m11 - m00 - m22) * 2.0  # s = 4y
+        w = (m02 - m20) / s
+        x = (m01 + m10) / s
+        y = 0.25 * s
+        z = (m12 + m21) / s
+    else:
+        s = math.sqrt(1.0 + m22 - m00 - m11) * 2.0  # s = 4z
+        w = (m10 - m01) / s
+        x = (m02 + m20) / s
+        y = (m12 + m21) / s
+        z = 0.25 * s
+
+    return quaternion_normalize((w, x, y, z))
+
+
 # 3x3 행렬 연산
 
 def rotation_matrix_3d(axis: str, angle_rad: float):
@@ -220,7 +260,7 @@ def matmul(a, b):
 
 
 def transpose3x3(m):
-    """3x3 행렬 전치. 회전행렬의 전치는 역행렬과 같으므로(직교행렬) 좌표계 역변환에 사용."""
+    """3x3 행렬 전치"""
     return (
         (m[0][0], m[1][0], m[2][0]),
         (m[0][1], m[1][1], m[2][1]),

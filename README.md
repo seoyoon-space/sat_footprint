@@ -260,6 +260,48 @@ curl -X POST "http://localhost:8000/footprint/compute" \
 
 Returns a GeoJSON `FeatureCollection` (footprint polygon + boresight center point).
 
+Same request body works against `POST /footprint/czml` for a Cesium-loadable CZML packet
+list instead (a `polygon` packet for the footprint + a `point` packet for the boresight
+center) - load it alongside `/telemetry/czml`'s output to show ground track and camera
+coverage in the same viewer.
+
+Both `/footprint/compute` and `/footprint/czml` intersect the camera ray against a smooth
+WGS-84 ellipsoid (no terrain). If the caller already has a precise terrain/DEM model and
+just needs the ray itself, use `POST /footprint/rays` instead - given a satellite/time
+range it loads real HK telemetry (position + attitude) and returns, per timestamp, the
+ECEF ray origin and the boresight + 4 FOV-corner unit direction vectors, with no ellipsoid
+or terrain intersection performed on this side:
+
+```bash
+curl -X POST "http://localhost:8000/footprint/rays" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T00:10:00Z",
+    "fov_x_deg": 10, "fov_y_deg": 10,
+    "boresight_x": -1, "boresight_y": 0, "boresight_z": 0
+  }'
+```
+
+For the common case of just wanting the ellipsoid-approximated footprint *polygon* itself, driven by
+real telemetry over a time range (no manual per-point calls, no external terrain model needed), use
+`POST /footprint/track` (GeoJSON, one Polygon+Point feature per timestamp with a `time` property) or
+`POST /footprint/track/czml` (CZML, one polygon+point packet per timestamp scoped with `availability`
+so Cesium shows the correct footprint as the timeline plays) - same request body as `/footprint/rays`:
+
+```bash
+curl -X POST "http://localhost:8000/footprint/track/czml" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T00:10:00Z",
+    "fov_x_deg": 10, "fov_y_deg": 10,
+    "boresight_x": -1, "boresight_y": 0, "boresight_z": 0
+  }'
+```
+
 ### Ops status (settling time / wheel saturation)
 
 ```bash

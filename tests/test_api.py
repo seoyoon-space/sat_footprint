@@ -9,13 +9,12 @@ core/loader/schema_map.py의 실제 canonical 필드명(qbody_wrt_eci1 등)과 �
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
 import api.czml_routes as czml_routes
+import api.footprint_routes as footprint_routes
 import api.routes as routes
 import api.validator_routes as validator_routes
 import config as config_module
@@ -54,10 +53,12 @@ def _clear_loader_caches():
     routes._get_loader.cache_clear()
     czml_routes._get_loader.cache_clear()
     validator_routes._get_loader.cache_clear()
+    footprint_routes._get_loader.cache_clear()
     yield
     routes._get_loader.cache_clear()
     czml_routes._get_loader.cache_clear()
     validator_routes._get_loader.cache_clear()
+    footprint_routes._get_loader.cache_clear()
 
 
 @pytest.fixture
@@ -65,6 +66,7 @@ def fake_loader(monkeypatch):
     monkeypatch.setattr(routes, "_get_loader", lambda satellite_id: _FakeLoader())
     monkeypatch.setattr(czml_routes, "_get_loader", lambda satellite_id: _FakeLoader())
     monkeypatch.setattr(validator_routes, "_get_loader", lambda satellite_id: _FakeLoader())
+    monkeypatch.setattr(footprint_routes, "_get_loader", lambda satellite_id: _FakeLoader())
 
 
 def test_health_check_requires_no_auth():
@@ -132,6 +134,112 @@ def test_footprint_compute_returns_geojson_feature_collection():
     body = resp.json()
     assert body["type"] == "FeatureCollection"
     assert len(body["features"]) >= 1
+
+
+def test_footprint_czml_returns_cesium_loadable_packets():
+    resp = client.post(
+        "/footprint/czml",
+        json={
+            "pos_eci_x": 7000e3,
+            "pos_eci_y": 0.0,
+            "pos_eci_z": 0.0,
+            "q_w": 1.0,
+            "q_x": 0.0,
+            "q_y": 0.0,
+            "q_z": 0.0,
+            "utc_datetime": "2026-08-20T00:00:00Z",
+            "fov_x_deg": 10.0,
+            "fov_y_deg": 10.0,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    packets = resp.json()
+    assert packets[0] == {"id": "document", "version": "1.0"}
+    polygon_packet = next(p for p in packets if "polygon" in p)
+    assert "cartographicDegrees" in polygon_packet["polygon"]["positions"]
+    point_packet = next(p for p in packets if "point" in p)
+    assert len(point_packet["position"]["cartographicDegrees"]) == 3
+
+
+def test_footprint_rays_returns_ecef_origin_and_directions_from_real_telemetry(fake_loader):
+    """DEM 서버가 자체 지형모델로 교차시킬 수 있도록, 타원체 교차 없이 실측
+    텔레메트리 기반 ECEF 광선(원점+방향)만 반환하는지 확인."""
+    resp = client.post(
+        "/footprint/rays",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_x_deg": 10.0,
+            "fov_y_deg": 10.0,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["satellite_id"] == "O1A"
+    assert body["num_records"] == 3
+    sample = body["samples"][0]
+    assert sample["origin_ecef"][0] != 0.0  # 위성 위치가 실측 텔레메트리에서 왔는지
+    assert len(sample["boresight_direction_ecef"]) == 3
+    assert len(sample["fov_corner_directions_ecef"]) == 4
+    # 순수 방향벡터만 반환하고 지표 교차(위경도)는 하지 않아야 함
+    assert "center" not in sample and "corners" not in sample
+
+
+def test_footprint_track_returns_geojson_with_time_tagged_features(fake_loader):
+    """실측 텔레메트리 기반 촬영영역 폴리곤(타원체 근사)이 시간 태그와 함께 나오는지 확인."""
+    resp = client.post(
+        "/footprint/track",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_x_deg": 10.0,
+            "fov_y_deg": 10.0,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "FeatureCollection"
+    polygon_features = [f for f in body["features"] if f["geometry"]["type"] == "Polygon"]
+    point_features = [f for f in body["features"] if f["geometry"]["type"] == "Point"]
+    # 3개 샘플 모두 지구를 내려다보는 nadir 근방이라 전부 visible해야 함
+    assert len(polygon_features) == 3
+    assert len(point_features) == 3
+    assert polygon_features[0]["properties"]["time"] == "2026-08-20T00:00:00Z"
+    assert polygon_features[1]["properties"]["time"] == "2026-08-20T00:00:01Z"
+
+
+def test_footprint_track_czml_scopes_each_sample_by_availability(fake_loader):
+    resp = client.post(
+        "/footprint/track/czml",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_x_deg": 10.0,
+            "fov_y_deg": 10.0,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    packets = resp.json()
+    assert packets[0] == {"id": "document", "version": "1.0"}
+    polygon_ids = [p["id"] for p in packets if "polygon" in p]
+    assert polygon_ids == ["footprint_polygon_0", "footprint_polygon_1", "footprint_polygon_2"]
+    first_polygon = next(p for p in packets if p["id"] == "footprint_polygon_0")
+    assert first_polygon["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:01Z"
 
 
 def test_ops_status_evaluates_settling_and_saturation(fake_loader):
@@ -224,9 +332,11 @@ def test_health_check_bypasses_api_key_even_when_configured(monkeypatch):
 
 
 def test_routers_share_a_single_loader_cache_per_satellite():
-    """routes.py/czml_routes.py/validator_routes.py가 각자 별도 @lru_cache를 두면 같은
-    satellite_id에 대해 SQLAlchemy Engine(DB 커넥션 풀)이 라우터별로 중복 생성된다.
-    api/loader_cache.py로 통합한 뒤에는 세 라우터가 동일한 캐시 함수 객체를 공유해야 한다.
+    """routes.py/czml_routes.py/validator_routes.py/footprint_routes.py가 각자 별도
+    @lru_cache를 두면 같은 satellite_id에 대해 SQLAlchemy Engine(DB 커넥션 풀)이
+    라우터별로 중복 생성된다. api/loader_cache.py로 통합한 뒤에는 네 라우터가 동일한
+    캐시 함수 객체를 공유해야 한다.
     """
     assert routes._get_loader is czml_routes._get_loader
     assert routes._get_loader is validator_routes._get_loader
+    assert routes._get_loader is footprint_routes._get_loader

@@ -110,6 +110,110 @@ def test_quaternion_to_cesium_unit_quaternion_is_scalar_last():
     assert cesium_q == (q[1], q[2], q[3], q[0])
 
 
+def test_rotation_matrix_to_quaternion_round_trips_with_quaternion_to_rotation_matrix():
+    from core.math_utils.quat import quaternion_to_rotation_matrix, rotation_matrix_to_quaternion
+
+    rng = random.Random(17)
+    for _ in range(30):
+        q = _random_unit_quaternion(rng)
+        m = quaternion_to_rotation_matrix(q)
+        recovered = rotation_matrix_to_quaternion(m)
+
+        if np.dot(q, recovered) < 0:
+            recovered = tuple(-c for c in recovered)
+        np.testing.assert_allclose(recovered, q, atol=1e-9)
+
+
+def test_eci_to_ecef_rotation_quaternion_matches_eci_to_ecef_vector_transform():
+    """eci_to_ecef_rotation_quaternion으로 벡터를 회전한 결과가 eci_to_ecef(행렬 경로)와
+    일치해야 한다 - CZML orientation 변환(body->ECI 쿼터니언을 body->ECEF로 합성)에 쓰이므로,
+    행렬 경로와 쿼터니언 경로가 같은 회전을 나타내는지 직접 검증한다.
+    """
+    from datetime import datetime, timezone
+
+    from core.coordinates import eci_to_ecef_rotation_quaternion
+    from core.math_utils.quat import rotate_vector_by_quaternion
+
+    rng = random.Random(21)
+    for dt in (
+        datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc),
+        datetime(2026, 8, 20, 5, 30, 0, tzinfo=timezone.utc),
+    ):
+        q_eci_to_ecef = eci_to_ecef_rotation_quaternion(dt)
+        for _ in range(10):
+            v = (rng.uniform(-7e6, 7e6), rng.uniform(-7e6, 7e6), rng.uniform(-7e6, 7e6))
+            via_quaternion = rotate_vector_by_quaternion(v, q_eci_to_ecef)
+            via_matrix = eci_to_ecef(v, dt)
+            np.testing.assert_allclose(via_quaternion, via_matrix, rtol=1e-9, atol=1e-3)
+
+
+def test_build_cesium_track_czml_orientation_is_body_to_ecef_not_raw_body_to_eci():
+    """CZML의 orientation.unitQuaternion은 CZML 스펙상 항상 body->Earth-FIXED를 뜻한다
+    (position.referenceFrame처럼 INERTIAL 선택지가 없음). 따라서 body->ECI로 저장된 HK
+    쿼터니언을 그대로 CZML에 실으면 Cesium이 잘못된 자세로 렌더링하게 되는데, 이 테스트는
+    build_cesium_track_czml이 실제로 ECI->ECEF 회전을 합성해서 내보내는지 검증한다.
+    """
+    import pandas as pd
+
+    from core.coordinates import build_cesium_track_czml, eci_to_ecef_rotation_quaternion
+    from core.math_utils.quat import quat_from_scalar_last, quat_to_scalar_last
+
+    dt = pd.Timestamp("2026-08-20T00:00:00Z")
+    q_body_to_eci = (0.9238795325112867, 0.0, 0.0, 0.38268343236508984)  # 45deg about Z, scalar-first
+
+    df = pd.DataFrame(
+        {
+            "time": [dt],
+            "pos_wrt_eci1": [7000e3],
+            "pos_wrt_eci2": [0.0],
+            "pos_wrt_eci3": [0.0],
+            "qbody_wrt_eci1": [q_body_to_eci[0]],
+            "qbody_wrt_eci2": [q_body_to_eci[1]],
+            "qbody_wrt_eci3": [q_body_to_eci[2]],
+            "qbody_wrt_eci4": [q_body_to_eci[3]],
+        }
+    )
+
+    czml = build_cesium_track_czml(
+        df,
+        position_cols=("pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3"),
+        orientation_cols=("qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"),
+        pointing_col=None,
+    )
+    out_cesium_q = czml[1]["orientation"]["unitQuaternion"][1:5]  # [t, x, y, z, w] -> [x, y, z, w]
+    out_q = quat_from_scalar_last(out_cesium_q)
+
+    q_eci_to_ecef = eci_to_ecef_rotation_quaternion(dt.to_pydatetime())
+    expected_q_body_to_ecef = quaternion_multiply(q_eci_to_ecef, q_body_to_eci)
+
+    got = np.asarray(quat_to_scalar_last(out_q))
+    expected = np.asarray(quat_to_scalar_last(expected_q_body_to_ecef))
+    if np.dot(got, expected) < 0:
+        expected = -expected
+    np.testing.assert_allclose(got, expected, atol=1e-9)
+
+    # 회귀 방지: 예전 버그(변환 없이 body->ECI를 그대로 내보냄)였다면 raw 입력과 같았을 것.
+    # 2026-08-20은 세차/GMST가 0이 아닌 시각이므로 반드시 달라야 한다.
+    raw = np.asarray(quat_to_scalar_last(q_body_to_eci))
+    assert not np.allclose(got, raw, atol=1e-6) and not np.allclose(got, -raw, atol=1e-6)
+
+
+def test_build_cesium_track_czml_eci_frame_marks_inertial_reference_frame():
+    """coordinate_frame='eci'일 때 CZML position에 referenceFrame='INERTIAL'을 명시해야
+    Cesium이 좌표를 지구고정계(FIXED, 기본값)가 아닌 관성계로 올바르게 해석한다."""
+    import pandas as pd
+
+    from core.coordinates import build_cesium_track_czml
+
+    df = pd.DataFrame({"time": [pd.Timestamp("2026-08-20T00:00:00Z")], "px": [7000e3], "py": [0.0], "pz": [0.0]})
+
+    czml_eci = build_cesium_track_czml(df, coordinate_frame="eci", position_cols=("px", "py", "pz"), orientation_cols=("a", "b", "c", "d"), pointing_col=None)
+    assert czml_eci[1]["position"]["referenceFrame"] == "INERTIAL"
+
+    czml_ecef = build_cesium_track_czml(df, coordinate_frame="ecef", position_cols=("px", "py", "pz"), orientation_cols=("a", "b", "c", "d"), pointing_col=None)
+    assert "referenceFrame" not in czml_ecef[1]["position"]  # 기본값 FIXED이므로 생략
+
+
 def test_eci_ecef_round_trip_and_norm_preserved():
     """eci_to_ecef/ecef_to_eci는 (근사)직교 회전 합성이므로 왕복 시 원값 복원, 노름 불변."""
     from datetime import datetime, timezone

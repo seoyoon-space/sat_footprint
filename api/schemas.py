@@ -64,6 +64,41 @@ class FootprintRequest(BaseModel):
     boresight_z: float = Field(1.0, description="바디 프레임 보어사이트 방향 벡터 z")
 
 
+class CameraRayTrackRequest(BaseModel):
+    """실측 텔레메트리(위치/자세) 기반 카메라 광선(ECEF 원점/방향) 조회 요청.
+
+    타원체/지형 교차는 하지 않는다 - 지형(DEM)을 가진 외부 서버가 이 광선을 받아
+    자체 정밀 지형모델로 풋프린트를 계산하는 것을 전제로 한다.
+    """
+
+    satellite_id: str = Field(..., description="위성 코드 (예: O1A, E3T, O1B, BSS)")
+    start_time: datetime | str = Field(..., description="조회 시작 시각 (KST 또는 UTC)")
+    end_time: datetime | str = Field(..., description="조회 종료 시각 (KST 또는 UTC)")
+    merge_tolerance_sec: float = Field(1.0, description="HK 패킷 병합 시 asof 허용 오차(초)")
+    fov_x_deg: float = Field(..., gt=0, description="카메라 시야각 X축 [deg]")
+    fov_y_deg: float = Field(..., gt=0, description="카메라 시야각 Y축 [deg]")
+    boresight_x: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 x")
+    boresight_y: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 y")
+    boresight_z: float = Field(1.0, description="바디 프레임 보어사이트 방향 벡터 z")
+
+
+class CameraRaySample(BaseModel):
+    time: datetime
+    origin_ecef: tuple[float, float, float] = Field(..., description="위성 위치 ECEF [m]")
+    boresight_direction_ecef: tuple[float, float, float] = Field(
+        ..., description="보어사이트 방향 단위벡터 (ECEF, 정규화됨)"
+    )
+    fov_corner_directions_ecef: list[tuple[float, float, float]] = Field(
+        ..., description="FOV 네 모서리 방향 단위벡터 (ECEF), 폴리곤 순서(반시계/시계 일관)"
+    )
+
+
+class CameraRayTrackResponse(BaseModel):
+    satellite_id: str
+    num_records: int
+    samples: list[CameraRaySample]
+
+
 class SettlingResultSchema(BaseModel):
     settled: bool
     settling_time: float | None

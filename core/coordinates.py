@@ -10,6 +10,7 @@ from core.math_utils.quat import (
     cross,
     dot,
     magnitude,
+    matmul,
     matvec_mul,
     normalize,
     quat_from_scalar_last,
@@ -19,6 +20,7 @@ from core.math_utils.quat import (
     quaternion_to_euler_xyz,
     rotate_vector_by_quaternion,
     rotation_matrix_3d,
+    rotation_matrix_to_quaternion,
     transpose3x3,
 )
 
@@ -36,6 +38,7 @@ __all__ = [
     "matvec_mul",
     "eci_to_ecef",
     "ecef_to_eci",
+    "eci_to_ecef_rotation_quaternion",
     "julian_date_from_datetime",
     "earth_rotation_angle_rad",
     "quaternion_to_euler_xyz",
@@ -225,6 +228,30 @@ def _earth_orientation_matrices(utc_datetime: datetime):
     return eci_to_mod, mod_to_tod, ast
 
 
+def _eci_to_ecef_matrix(utc_datetime: datetime):
+    """ECI->ECEF 전체 회전을 나타내는 단일 3x3 행렬 (eci_to_ecef의 행렬 3개 합성).
+
+    eci_to_ecef_rotation_quaternion처럼 좌표뿐 아니라 자세(쿼터니언)까지 프레임을
+    바꿔야 하는 경우(예: CZML orientation) 재사용하기 위해 분리했다.
+    """
+    eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
+    return matmul(rotation_matrix_3d("z", -ast), matmul(mod_to_tod, eci_to_mod))
+
+
+def eci_to_ecef_rotation_quaternion(utc_datetime: datetime) -> Quaternion:
+    """ECI->ECEF 회전을 나타내는 scalar-first 쿼터니언.
+
+    좌표 변환(eci_to_ecef)과 동일한 회전을, 쿼터니언으로 자세를 표현하는 값(예: 위성
+    body 쿼터니언)에 합성하기 위해 제공한다. 예: body->ECI 쿼터니언 q에 이 값을
+    quaternion_multiply(eci_to_ecef_rotation_quaternion(dt), q)로 곱하면 body->ECEF
+    쿼터니언이 된다(quaternion_multiply(q1, q2)는 "q2 먼저 적용 후 q1 적용" 합성 관례,
+    test_quaternion_multiply_matches_scipy_composition 참고).
+    """
+    if utc_datetime.tzinfo is None:
+        utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
+    return rotation_matrix_to_quaternion(_eci_to_ecef_matrix(utc_datetime))
+
+
 def eci_to_ecef(vec_eci, utc_datetime: datetime) -> Vector3:
     """ECI(GCRF/J2000 평균 적도/분점) 벡터 -> ECEF(ITRF 근사) 벡터.
 
@@ -234,22 +261,14 @@ def eci_to_ecef(vec_eci, utc_datetime: datetime) -> Vector3:
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
-    v = matvec_mul(eci_to_mod, _to_float_tuple(vec_eci))
-    v = matvec_mul(mod_to_tod, v)
-    v = matvec_mul(rotation_matrix_3d("z", -ast), v)
-    return v
+    return matvec_mul(_eci_to_ecef_matrix(utc_datetime), _to_float_tuple(vec_eci))
 
 
 def ecef_to_eci(vec_ecef, utc_datetime: datetime) -> Vector3:
     """ECEF(ITRF 근사) 벡터 -> ECI(GCRF/J2000 평균 적도/분점) 벡터. eci_to_ecef의 역변환."""
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
-    eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
-    v = matvec_mul(rotation_matrix_3d("z", ast), _to_float_tuple(vec_ecef))
-    v = matvec_mul(transpose3x3(mod_to_tod), v)
-    v = matvec_mul(transpose3x3(eci_to_mod), v)
-    return v
+    return matvec_mul(transpose3x3(_eci_to_ecef_matrix(utc_datetime)), _to_float_tuple(vec_ecef))
 
 
 def geodetic_to_ecef(lat_deg: float, lon_deg: float, alt_m: float = 0.0) -> Vector3:
@@ -331,6 +350,13 @@ def build_cesium_track_czml(
     The output is a list of CZML packets suitable for direct use in Cesium:
       - document packet
       - one object packet with `position`/`orientation` time-sampled arrays
+
+    CZML's `orientation.unitQuaternion` is always defined as body-axes -> Earth-FIXED
+    (there is no INERTIAL option for orientation, unlike `position.referenceFrame`), so the
+    input orientation_cols (assumed body->ECI, matching core.coordinates.pointing_vector_from_quaternion's
+    convention) is always rotated into body->ECEF here regardless of `coordinate_frame` -
+    otherwise Cesium would render the wrong attitude except at the rare instant the
+    ECI->ECEF rotation happens to be near-identity.
     """
     import pandas as pd
 
@@ -368,13 +394,17 @@ def build_cesium_track_czml(
             pos_entries.extend([offset_seconds, x, y, z])
 
         if has_orientation:
-            q = (
+            q_body_to_eci = (
                 float(getattr(row, orientation_cols[0])),
                 float(getattr(row, orientation_cols[1])),
                 float(getattr(row, orientation_cols[2])),
                 float(getattr(row, orientation_cols[3])),
             )
-            xq, yq, zq, wq = quaternion_to_cesium_unit_quaternion(q)
+            # CZML orientation은 항상 body->Earth-FIXED임
+            # ECI->ECEF 회전을 합성해 body->ECEF로 변환 필요.
+            q_eci_to_ecef = eci_to_ecef_rotation_quaternion(ts_dt.to_pydatetime())
+            q_body_to_ecef = quaternion_multiply(q_eci_to_ecef, q_body_to_eci)
+            xq, yq, zq, wq = quaternion_to_cesium_unit_quaternion(q_body_to_ecef)
             orientation_entries.extend([offset_seconds, xq, yq, zq, wq])
 
         if has_pointing:
@@ -389,6 +419,10 @@ def build_cesium_track_czml(
     packet = {"id": id_prefix}
     if pos_entries:
         packet["position"] = {"epoch": epoch_text, "cartesian": pos_entries}
+        if frame == "eci":
+            # CZML position의 기본 referenceFrame은 FIXED(ECEF)이므로, ECI 좌표를 그대로
+            # 넘길 때는 INERTIAL임을 명시하지 않으면 Cesium이 지구고정계 좌표로 오해한다.
+            packet["position"]["referenceFrame"] = "INERTIAL"
     if orientation_entries:
         packet["orientation"] = {"epoch": epoch_text, "unitQuaternion": orientation_entries}
     if pointing_entries:
