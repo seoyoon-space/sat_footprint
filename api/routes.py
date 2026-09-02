@@ -2,22 +2,13 @@
 
 from __future__ import annotations
 
-from functools import lru_cache
+from fastapi import APIRouter, Depends, HTTPException
 
-from fastapi import APIRouter, HTTPException
-
-from core.loader import HKLoader
-from core.loader.hk_loader import df_to_czml
-
+from .auth import require_api_key
+from .loader_cache import get_loader as _get_loader
 from .schemas import TelemetryQueryRequest, TelemetryRecord, TelemetryResponse
 
-router = APIRouter(prefix="/telemetry", tags=["telemetry"])
-
-
-@lru_cache(maxsize=None)
-def _get_loader(satellite_id: str) -> HKLoader:
-    """위성별 DB 커넥션(Engine)을 재사용하기 위한 캐시."""
-    return HKLoader.for_satellite(satellite_id)
+router = APIRouter(prefix="/telemetry", tags=["telemetry"], dependencies=[Depends(require_api_key)])
 
 
 @router.post("/query", response_model=TelemetryResponse)
@@ -35,8 +26,11 @@ def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
 
     try:
         df = loader.load(
-            start_time=req.start_time.isoformat(),
-            end_time=req.end_time.isoformat(),
+            # HKLoader.load()/_normalize_query_time는 str/datetime을 모두 받으므로 그대로 전달.
+            # (예전에는 .isoformat()을 강제 호출해서, pydantic이 ISO 문자열을 str로 파싱한
+            # 경우 - datetime|str 유니온에서 흔히 벌어짐 - AttributeError로 항상 실패했음)
+            start_time=req.start_time,
+            end_time=req.end_time,
             satellite_id=None,  # DB 자체가 위성별로 분리되어 있어 컬럼 필터 불필요
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,

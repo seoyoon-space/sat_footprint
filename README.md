@@ -191,10 +191,20 @@ Start the API:
 uvicorn main:app --host 0.0.0.0 --port 8000
 ```
 
-Health check:
+Health check (no auth required):
 
 ```bash
 curl http://localhost:8000/health
+```
+
+### Authentication
+
+If `API_KEY` is set in `.env`, `/telemetry/*`, `/footprint/*`, and `/validator/*` require an
+`X-API-Key` header matching that value. If `API_KEY` is unset (local development default), no
+auth is enforced. `/health` never requires a key.
+
+```bash
+curl -H "X-API-Key: your_api_key" http://localhost:8000/telemetry/query ...
 ```
 
 Query telemetry:
@@ -233,6 +243,40 @@ resp = requests.post(
 print(resp.status_code)
 print(resp.json())
 ```
+
+### Camera footprint (no DB, stateless)
+
+```bash
+curl -X POST "http://localhost:8000/footprint/compute" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pos_eci_x": 7000000, "pos_eci_y": 0, "pos_eci_z": 0,
+    "q_w": 1, "q_x": 0, "q_y": 0, "q_z": 0,
+    "utc_datetime": "2026-08-20T00:00:00Z",
+    "fov_x_deg": 10, "fov_y_deg": 10,
+    "boresight_x": -1, "boresight_y": 0, "boresight_z": 0
+  }'
+```
+
+Returns a GeoJSON `FeatureCollection` (footprint polygon + boresight center point).
+
+### Ops status (settling time / wheel saturation)
+
+```bash
+curl -X POST "http://localhost:8000/validator/ops-status" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T01:00:00Z",
+    "settling_tolerance_deg": 0.5,
+    "settling_hold_duration_sec": 30,
+    "wheel_max_rpm": 6000
+  }'
+```
+
+`settling_tolerance_deg`/`wheel_max_rpm` are each optional; omit one to skip that evaluation.
+Returns overall `PASS`/`WARN`/`FAIL` plus per-check detail (see `core/validator/ops_rules.py`).
 
 ## Notes / real DB validation
 

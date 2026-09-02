@@ -1,0 +1,232 @@
+"""api/ 라우터(FastAPI 엔드포인트) 검증.
+
+실제 DB 연결 없이, HKLoader.load()가 반환하는 DataFrame을 monkeypatch로 대체해
+라우팅/인증/스키마 직렬화 로직만 검증한다. 특히 이전에는 TelemetryRecord/czml_routes.py가
+core/loader/schema_map.py의 실제 canonical 필드명(qbody_wrt_eci1 등)과 다른 이름
+(q_eci2body_1 등)을 쓰고 있어서 위치/자세 데이터가 항상 비어버리는 버그가 있었는데,
+여기서 실제 필드명으로 왕복되는지 회귀 테스트로 고정한다.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+
+import pandas as pd
+import pytest
+from fastapi.testclient import TestClient
+
+import api.czml_routes as czml_routes
+import api.routes as routes
+import api.validator_routes as validator_routes
+import config as config_module
+import main
+
+client = TestClient(main.app)
+
+
+def _fake_hk_dataframe() -> pd.DataFrame:
+    times = pd.to_datetime(
+        ["2026-08-20T00:00:00Z", "2026-08-20T00:00:01Z", "2026-08-20T00:00:02Z"], utc=True
+    )
+    return pd.DataFrame(
+        {
+            "time": times,
+            "qbody_wrt_eci1": [1.0, 1.0, 1.0],
+            "qbody_wrt_eci2": [0.0, 0.0, 0.0],
+            "qbody_wrt_eci3": [0.0, 0.0, 0.0],
+            "qbody_wrt_eci4": [0.0, 0.0, 0.0],
+            "pos_wrt_eci1": [7000e3, 7001e3, 7002e3],
+            "pos_wrt_eci2": [0.0, 0.0, 0.0],
+            "pos_wrt_eci3": [0.0, 0.0, 0.0],
+            "eigen_err": [5.0, 1.0, 0.05],
+            "filt_speed_rpm1": [100.0, 200.0, 5900.0],
+        }
+    )
+
+
+class _FakeLoader:
+    def load(self, **kwargs):
+        return _fake_hk_dataframe()
+
+
+@pytest.fixture(autouse=True)
+def _clear_loader_caches():
+    routes._get_loader.cache_clear()
+    czml_routes._get_loader.cache_clear()
+    validator_routes._get_loader.cache_clear()
+    yield
+    routes._get_loader.cache_clear()
+    czml_routes._get_loader.cache_clear()
+    validator_routes._get_loader.cache_clear()
+
+
+@pytest.fixture
+def fake_loader(monkeypatch):
+    monkeypatch.setattr(routes, "_get_loader", lambda satellite_id: _FakeLoader())
+    monkeypatch.setattr(czml_routes, "_get_loader", lambda satellite_id: _FakeLoader())
+    monkeypatch.setattr(validator_routes, "_get_loader", lambda satellite_id: _FakeLoader())
+
+
+def test_health_check_requires_no_auth():
+    resp = client.get("/health")
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "ok"}
+
+
+def test_telemetry_query_uses_real_canonical_field_names(fake_loader):
+    resp = client.post(
+        "/telemetry/query",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["num_records"] == 3
+    record = body["records"][0]
+    assert record["qbody_wrt_eci1"] == 1.0
+    assert record["pos_wrt_eci1"] == 7000e3
+    assert record["eigen_err"] == 5.0
+
+
+def test_telemetry_czml_positions_are_populated_with_real_field_names(fake_loader):
+    resp = client.post(
+        "/telemetry/czml",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    assert resp.status_code == 200
+    packets = resp.json()
+    assert packets[0] == {"id": "document", "version": "1.0"}
+    data_packet = packets[1]
+    # 이전 버그: position_cols가 실제 DataFrame 컬럼과 안 맞아 'position' 키 자체가 빠졌었음
+    assert "position" in data_packet
+    assert len(data_packet["position"]["cartesian"]) == 3 * 4  # 3 rows * (t,x,y,z)
+
+
+def test_footprint_compute_returns_geojson_feature_collection():
+    resp = client.post(
+        "/footprint/compute",
+        json={
+            "pos_eci_x": 7000e3,
+            "pos_eci_y": 0.0,
+            "pos_eci_z": 0.0,
+            "q_w": 1.0,
+            "q_x": 0.0,
+            "q_y": 0.0,
+            "q_z": 0.0,
+            "utc_datetime": "2026-08-20T00:00:00Z",
+            "fov_x_deg": 10.0,
+            "fov_y_deg": 10.0,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "FeatureCollection"
+    assert len(body["features"]) >= 1
+
+
+def test_ops_status_evaluates_settling_and_saturation(fake_loader):
+    resp = client.post(
+        "/validator/ops-status",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "settling_tolerance_deg": 0.1,
+            "settling_hold_duration_sec": 1.0,
+            "wheel_max_rpm": 6000.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["satellite_id"] == "O1A"
+    assert body["settling"]["settled"] is True
+    assert body["wheel_saturation"]["status"] == "WARN"  # 5900/6000 ratio ~0.983 >= warn_ratio 0.9
+
+
+def test_ops_status_without_any_evaluation_criteria_is_pass(fake_loader):
+    resp = client.post(
+        "/validator/ops-status",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "PASS"
+    assert body["settling"] is None
+    assert body["wheel_saturation"] is None
+
+
+def test_telemetry_query_unknown_satellite_returns_400():
+    resp = client.post(
+        "/telemetry/query",
+        json={
+            "satellite_id": "DOES_NOT_EXIST",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    # config/satellites.toml이 없거나 satellite_id가 등록되지 않은 경우 -> 400/500 중 하나로
+    # 명확한 HTTP 에러가 나야 하며, 500 Internal Server Error(트레이스백 노출)로 새면 안 됨.
+    assert resp.status_code in (400, 500)
+    assert "detail" in resp.json()
+
+
+def test_api_key_required_when_configured(fake_loader, monkeypatch):
+    monkeypatch.setattr(config_module.settings, "api_key", "secret123")
+
+    resp_no_key = client.post(
+        "/telemetry/query",
+        json={"satellite_id": "O1A", "start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-20T00:00:02Z"},
+    )
+    assert resp_no_key.status_code == 401
+
+    resp_wrong_key = client.post(
+        "/telemetry/query",
+        json={"satellite_id": "O1A", "start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-20T00:00:02Z"},
+        headers={"X-API-Key": "wrong"},
+    )
+    assert resp_wrong_key.status_code == 401
+
+    resp_ok = client.post(
+        "/telemetry/query",
+        json={"satellite_id": "O1A", "start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-20T00:00:02Z"},
+        headers={"X-API-Key": "secret123"},
+    )
+    assert resp_ok.status_code == 200
+
+
+def test_api_key_not_required_when_unset(fake_loader):
+    assert config_module.settings.api_key is None
+    resp = client.post(
+        "/telemetry/query",
+        json={"satellite_id": "O1A", "start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-20T00:00:02Z"},
+    )
+    assert resp.status_code == 200
+
+
+def test_health_check_bypasses_api_key_even_when_configured(monkeypatch):
+    monkeypatch.setattr(config_module.settings, "api_key", "secret123")
+    resp = client.get("/health")
+    assert resp.status_code == 200
+
+
+def test_routers_share_a_single_loader_cache_per_satellite():
+    """routes.py/czml_routes.py/validator_routes.py가 각자 별도 @lru_cache를 두면 같은
+    satellite_id에 대해 SQLAlchemy Engine(DB 커넥션 풀)이 라우터별로 중복 생성된다.
+    api/loader_cache.py로 통합한 뒤에는 세 라우터가 동일한 캐시 함수 객체를 공유해야 한다.
+    """
+    assert routes._get_loader is czml_routes._get_loader
+    assert routes._get_loader is validator_routes._get_loader

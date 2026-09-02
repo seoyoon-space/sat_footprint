@@ -49,6 +49,10 @@ class Settings(BaseSettings):
 
     satellite_config_path: str = "config/satellites.toml"
 
+    # 설정 시 /telemetry, /footprint, /validator 라우터가 X-API-Key 헤더를 요구함.
+    # 미설정(None)이면 인증을 건너뜀 - 로컬 개발용 기본값이며, 운영 배포 시 반드시 설정할 것.
+    api_key: str | None = None
+
     mysql_host: str | None = None
     mysql_port: int = 3306
     mysql_user: str | None = None

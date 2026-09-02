@@ -2,16 +2,18 @@
 
 from fastapi import FastAPI
 
+from api.czml_routes import router as czml_router
+from api.footprint_routes import router as footprint_router
 from api.routes import router as telemetry_router
+from api.validator_routes import router as validator_router
 from config import settings
 
 app = FastAPI(title=settings.api_title, version=settings.api_version)
 
 app.include_router(telemetry_router)
-
-# include CZML-specific routes (same prefix '/telemetry')
-from api.czml_routes import router as czml_router
-app.include_router(czml_router)
+app.include_router(czml_router)  # same prefix '/telemetry'
+app.include_router(footprint_router)
+app.include_router(validator_router)
 
 
 @app.get("/health")

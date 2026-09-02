@@ -140,6 +140,7 @@ def test_eci_ecef_rotation_sign_matches_greenwich_meridian_physics():
     from core.coordinates import ecef_to_eci
 
     for dt in (
+        datetime(1990, 6, 10, 3, 0, 0, tzinfo=timezone.utc),  # 1997년 이전: GAST 운동학적 보정항 미적용 분기
         datetime(2000, 1, 1, 12, 0, 0, tzinfo=timezone.utc),  # J2000 epoch 근방(세차~0)
         datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc),
         datetime(2040, 3, 15, 6, 30, 0, tzinfo=timezone.utc),
@@ -255,6 +256,71 @@ def test_precession_matrix_is_near_identity_at_j2000_epoch():
         abs(m[i][j] - (1.0 if i == j else 0.0)) for i in range(3) for j in range(3)
     )
     assert identity_diff < 1e-6
+
+
+def test_apparent_sidereal_time_kinematic_term_only_applied_after_1997():
+    """GAST = GMST + 분점방정식. 1997년 이후에만 붙는 운동학적 보정항(계수 0.00264"/0.000063")이
+    실제로 그 경계(JD 2450449.5)를 기준으로 정확히 켜지고 꺼지는지 직접 검증한다.
+    보정항 자체는 밀리각초 수준으로 작아서, 다른 회전-방향 테스트의 1도 허용오차로는
+    이 분기 로직의 존재 여부를 구분할 수 없다.
+    """
+    from datetime import datetime, timezone
+
+    from core.coordinates import (
+        ARCSEC_TO_RAD,
+        _apparent_sidereal_time_rad,
+        _julian_centuries_j2000,
+        _mean_obliquity_rad,
+        _nutation_angles_rad,
+    )
+
+    dt_before = datetime(1990, 6, 10, 3, 0, 0, tzinfo=timezone.utc)
+    dt_after = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+    for dt, expect_kinematic_term in ((dt_before, False), (dt_after, True)):
+        t = _julian_centuries_j2000(dt)
+        mean_eps = _mean_obliquity_rad(t)
+        delta_psi, _, omega = _nutation_angles_rad(t)
+
+        gast = _apparent_sidereal_time_rad(dt, delta_psi, mean_eps, omega)
+        gmst = earth_rotation_angle_rad(dt)
+        eqe_without_kinematic = delta_psi * math.cos(mean_eps)
+        eqe_with_kinematic = eqe_without_kinematic + (
+            0.00264 * math.sin(omega) + 0.000063 * math.sin(2.0 * omega)
+        ) * ARCSEC_TO_RAD
+
+        expected_eqe = eqe_with_kinematic if expect_kinematic_term else eqe_without_kinematic
+        expected_gast = (gmst + expected_eqe) % (2.0 * math.pi)
+
+        assert gast == pytest.approx(expected_gast, abs=1e-12)
+
+
+def test_precession_nutation_cached_per_utc_date():
+    """_earth_orientation_matrices의 세차/장동 부분은 UTC 날짜 단위로 캐시된다(성능 최적화).
+    같은 날짜의 서로 다른 시각은 캐시를 공유(동일 객체)해야 하고, 다른 날짜는 별도 계산이어야 한다.
+    GMST(겉보기항성시)만큼은 이 캐시와 무관하게 항상 타임스탬프별로 달라져야 한다(지구 자전 반영).
+    """
+    from datetime import datetime, timezone
+
+    from core.coordinates import _earth_orientation_matrices, _precession_nutation_for_date
+
+    _precession_nutation_for_date.cache_clear()
+
+    dt_a = datetime(2026, 8, 20, 1, 0, 0, tzinfo=timezone.utc)
+    dt_b = datetime(2026, 8, 20, 23, 0, 0, tzinfo=timezone.utc)  # 같은 날, 다른 시각
+    dt_c = datetime(2026, 8, 21, 1, 0, 0, tzinfo=timezone.utc)  # 다음 날
+
+    same_day_1 = _precession_nutation_for_date(dt_a.date())
+    same_day_2 = _precession_nutation_for_date(dt_b.date())
+    next_day = _precession_nutation_for_date(dt_c.date())
+
+    assert same_day_1 is same_day_2  # 캐시 히트: 동일 튜플 객체
+    assert same_day_1 is not next_day  # 날짜가 바뀌면 재계산
+
+    # 같은 날짜라도 GAST(따라서 최종 ECI<->ECEF 회전)는 시각마다 달라져야 함
+    _, _, ast_a = _earth_orientation_matrices(dt_a)
+    _, _, ast_b = _earth_orientation_matrices(dt_b)
+    assert ast_a != ast_b
 
 
 def test_precession_matrix_rotation_rate_matches_known_50_arcsec_per_year():

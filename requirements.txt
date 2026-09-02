@@ -1,11 +1,14 @@
 # API 런타임(core/coordinates.py, core/loader 등)은 numpy/scipy 없이 자체 구현으로 동작.
 # 다만 tests/test_loader.py와 core/dynamics/*(순방향 시뮬레이션 스캐폴딩)는 numpy/scipy를 직접 사용하므로
-# 테스트 실행 및 CI를 위해 여기 포함한다.
+# 테스트 실행 및 CI를 위해 여기 포함.
 #
 # sgp4는 유일한 명시적 예외: core/propagation.py의 TLE 궤도 전파에 사용. SGP4는 WGS-72
 # 경험 상수가 많고 미묘한 엣지케이스(deep-space 공진 등)가 있어 직접 구현 시 조용히
 # 틀리기 쉬운 알고리즘이라, Vallado의 공식 검증 벡터로 지속 검증되는 성숙한 구현체를
-# 그대로 채택했다(core/coordinates.py 등 나머지 계산 코드는 여전히 자체 구현 원칙 유지).
+# 그대로 채택(core/coordinates.py 등 나머지 계산 코드는 여전히 자체 구현 원칙 유지).
+#
+# httpx는 테스트 전용: fastapi.testclient.TestClient(starlette 기반)가 내부적으로 요구.
+# 런타임에는 사용 안됨. 
 
 fastapi==0.115.0
 uvicorn==0.30.6
@@ -18,3 +21,4 @@ pytest==8.3.3
 numpy==2.5.2
 scipy==1.18.1
 sgp4==2.27
+httpx==0.27.2

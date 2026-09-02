@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import math
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
+from functools import lru_cache
 
 from core.math_utils.quat import (
     Quaternion,
@@ -79,19 +80,18 @@ ARCSEC_TO_RAD = math.pi / (180.0 * 3600.0)
 
 
 def earth_rotation_angle_rad(utc_datetime: datetime) -> float:
-    """Greenwich Mean Sidereal Time(GMST), IAU-82 다항식(Vallado, *Fundamentals of
-    Astrodynamics and Applications*, 2013, Eq. 3-43 / gstime.m과 동일 공식).
+    """GMST, IAU-82 다항식(gstime.m과 동일 공식).
 
-    IERS 관측 데이터(UT1-UTC 보정치)가 없어 입력 UTC를 UT1로 근사한다.
-    이로 인한 잔여오차는 |UT1-UTC| <= 0.9s -> 각도 오차 <= 약 13.5각초 수준이며,
-    IERS 공표 데이터를 실시간으로 받아오지 않는 한 이 오차는 원리적으로 해소 불가하다.
+    IERS 관측 데이터(UT1-UTC 보정치)가 없어 입력 UTC를 UT1로 근사.
+    잔여오차는 |UT1-UTC| <= 0.9s -> 각도 오차 <= 약 13.5각초 수준이며,
+    IERS 공표 데이터를 실시간으로 받아오지 않는 한 이 오차는 원리적으로 해소 불가.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
     jd = julian_date_from_datetime(utc_datetime)
     tut1 = (jd - 2451545.0) / 36525.0
 
-    # 시간초 단위 다항식. 360도/86400초 = 1/240 (도/초)로 각도 변환.
+    # 시간초 단위. 360도/86400초 = 1/240 (도/초)로 각도 변환.
     temp_sec = (
         -6.2e-6 * tut1 * tut1 * tut1
         + 0.093104 * tut1 * tut1
@@ -103,13 +103,13 @@ def earth_rotation_angle_rad(utc_datetime: datetime) -> float:
 
 def _julian_centuries_j2000(utc_datetime: datetime) -> float:
     """J2000.0(TT) 기준 율리우스 세기 수. UTC와 TT의 차이(2026년 기준 약 69초)는
-    100년 단위 T값에 10^-8 수준의 영향만 주므로 무시하고 UTC로 근사한다."""
+    100년 단위 T값에 10^-8 수준의 영향만 주므로 무시하고 UTC로 근사."""
     jd = julian_date_from_datetime(utc_datetime)
     return (jd - 2451545.0) / 36525.0
 
 
 def _mean_obliquity_rad(t: float) -> float:
-    """평균 황도경사각(mean obliquity of the ecliptic), IAU 1980 모델.
+    """평균 황도경사각, IAU 1980 모델.
 
     84381.448" - 46.8150"T - 0.00059"T^2 + 0.001813"T^3  (Vallado precess.m, opt='80'의 'ea').
     """
@@ -118,13 +118,12 @@ def _mean_obliquity_rad(t: float) -> float:
 
 
 def _nutation_angles_rad(t: float) -> tuple[float, float, float]:
-    """장동각(delta_psi, delta_eps)과 오메가(달 궤도 승교점 황경)를 저정밀도 공식으로 계산.
+    """delta_psi, delta_eps과 omega를 저정밀도 공식으로 계산.
 
     IAU 1980 이론의 106항 전체 급수 대신, 지배적인 4개 항만 사용하는 Meeus의
-    저정밀도(Low Accuracy) 공식(Jean Meeus, *Astronomical Algorithms* 2nd ed., Ch.22)을
-    적용한다. 정확도: delta_psi 오차 < 0.5", delta_eps 오차 < 0.1" (수 세기 범위에서).
+    Low Accuracy 공식을 적용. 정확도: delta_psi 오차 < 0.5", delta_eps 오차 < 0.1" (수 세기 범위에서).
     세차(연간 약 50", 이 텔레메트리 기준 26년 누적 시 약 20분각)에 비해 장동은 훨씬
-    작고 주기적(비누적)이라, 이 근사만으로도 세차 미보정으로 인한 큰 계통오차는 해소된다.
+    작고 주기적이라, 이 근사만으로도 세차 미보정으로 인한 큰 계통오차는 해소.
     """
     omega = math.radians(125.04452 - 1934.136261 * t)
     l_sun = math.radians(280.4665 + 36000.7698 * t)
@@ -187,9 +186,7 @@ def _nutation_matrix_mod_to_tod(delta_psi: float, mean_eps: float, true_eps: flo
 
 
 def _apparent_sidereal_time_rad(utc_datetime: datetime, delta_psi: float, mean_eps: float, omega: float) -> float:
-    """겉보기항성시(GAST) = GMST + 분점방정식(equation of the equinoxes).
-
-    1997년 이후(Vallado sidereal.m 기준 jd > 2450449.5)에는 운동학적 보정항까지 포함한다.
+    """GAST = GMST + 분점방정식.
     """
     gmst = earth_rotation_angle_rad(utc_datetime)
     jd = julian_date_from_datetime(utc_datetime)
@@ -199,15 +196,32 @@ def _apparent_sidereal_time_rad(utc_datetime: datetime, delta_psi: float, mean_e
     return (gmst + eqe) % (2.0 * math.pi)
 
 
-def _earth_orientation_matrices(utc_datetime: datetime):
-    """주어진 시각의 (세차 행렬(ECI->MOD), 장동 행렬(MOD->TOD), 겉보기항성시(rad))을 계산."""
-    t = _julian_centuries_j2000(utc_datetime)
+@lru_cache(maxsize=64)
+def _precession_nutation_for_date(date_key: date):
+    """세차/장동 행렬 + 장동각을 UTC 날짜 단위로 캐시.
+
+    세차는 약 50"/year(~0.14"/day), 장동의 지배항은 약 17"의 진폭을 18.6년 주기로
+    그리므로 하루 내 변화는 <= 약 0.02"/day 수준. 반면 GMST는
+    지구 자전으로 초당 약 15"를 움직이므로 절대 이렇게 캐시하면 안 되고, 항상
+    타임스탬프마다 정확히 재계산한다(_earth_orientation_matrices 참고). 날짜 단위
+    캐싱으로 추가되는 오차(<= 하루치 세차/장동 변화량)는 GMST 자체가 이미 갖고 있는
+    UT1-UTC 미보정 오차(<= 약 13.5", earth_rotation_angle_rad 참고)보다 훨씬 작아
+    전체 정확도에 실질적 영향 없음. 
+    """
+    reference_dt = datetime(date_key.year, date_key.month, date_key.day, 12, 0, 0, tzinfo=timezone.utc)
+    t = _julian_centuries_j2000(reference_dt)
     mean_eps = _mean_obliquity_rad(t)
     delta_psi, delta_eps, omega = _nutation_angles_rad(t)
     true_eps = mean_eps + delta_eps
-    ast = _apparent_sidereal_time_rad(utc_datetime, delta_psi, mean_eps, omega)
     eci_to_mod = _precession_matrix_eci_to_mod(t)
     mod_to_tod = _nutation_matrix_mod_to_tod(delta_psi, mean_eps, true_eps)
+    return eci_to_mod, mod_to_tod, delta_psi, mean_eps, omega
+
+
+def _earth_orientation_matrices(utc_datetime: datetime):
+    """주어진 시각의 (세차 행렬(ECI->MOD), 장동 행렬(MOD->TOD), 겉보기항성시(rad))을 계산."""
+    eci_to_mod, mod_to_tod, delta_psi, mean_eps, omega = _precession_nutation_for_date(utc_datetime.date())
+    ast = _apparent_sidereal_time_rad(utc_datetime, delta_psi, mean_eps, omega)
     return eci_to_mod, mod_to_tod, ast
 
 

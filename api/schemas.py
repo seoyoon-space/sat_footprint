@@ -14,25 +14,30 @@ class TelemetryQueryRequest(BaseModel):
 
 
 class TelemetryRecord(BaseModel):
+    """core/loader/schema_map.py의 canonical 필드명(실제 O1B HK 스키마 기준)과 일치시킨다.
+    (예전 버전은 q_eci2body_1/pos_eci_x 등 실제 DB에 없는 이름을 썼던 버그가 있었음)
+    """
+
     model_config = ConfigDict(extra="allow")
 
     time: datetime
-    q_eci2body_1: float | None = None
-    q_eci2body_2: float | None = None
-    q_eci2body_3: float | None = None
-    q_eci2body_4: float | None = None
-    body_rate_x: float | None = None
-    body_rate_y: float | None = None
-    body_rate_z: float | None = None
-    wheel_rpm_1: float | None = None
-    wheel_rpm_2: float | None = None
-    wheel_rpm_3: float | None = None
-    pos_eci_x: float | None = None
-    pos_eci_y: float | None = None
-    pos_eci_z: float | None = None
-    vel_eci_x: float | None = None
-    vel_eci_y: float | None = None
-    vel_eci_z: float | None = None
+    qbody_wrt_eci1: float | None = None
+    qbody_wrt_eci2: float | None = None
+    qbody_wrt_eci3: float | None = None
+    qbody_wrt_eci4: float | None = None
+    body_rate1: float | None = None
+    body_rate2: float | None = None
+    body_rate3: float | None = None
+    filt_speed_rpm1: float | None = None
+    filt_speed_rpm2: float | None = None
+    filt_speed_rpm3: float | None = None
+    pos_wrt_eci1: float | None = None
+    pos_wrt_eci2: float | None = None
+    pos_wrt_eci3: float | None = None
+    vel_wrt_eci1: float | None = None
+    vel_wrt_eci2: float | None = None
+    vel_wrt_eci3: float | None = None
+    eigen_err: float | None = None
 
 
 class TelemetryResponse(BaseModel):
@@ -41,3 +46,67 @@ class TelemetryResponse(BaseModel):
     end_time: datetime
     num_records: int
     records: list[TelemetryRecord]
+
+
+class FootprintRequest(BaseModel):
+    pos_eci_x: float = Field(..., description="위성 위치 ECI X [m]")
+    pos_eci_y: float = Field(..., description="위성 위치 ECI Y [m]")
+    pos_eci_z: float = Field(..., description="위성 위치 ECI Z [m]")
+    q_w: float = Field(..., description="자세 쿼터니언 스칼라부(body->eci, scalar-first 관례)")
+    q_x: float = Field(..., description="자세 쿼터니언 벡터부 x")
+    q_y: float = Field(..., description="자세 쿼터니언 벡터부 y")
+    q_z: float = Field(..., description="자세 쿼터니언 벡터부 z")
+    utc_datetime: datetime = Field(..., description="촬영 시각 (UTC)")
+    fov_x_deg: float = Field(..., gt=0, description="카메라 시야각 X축 [deg]")
+    fov_y_deg: float = Field(..., gt=0, description="카메라 시야각 Y축 [deg]")
+    boresight_x: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 x")
+    boresight_y: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 y")
+    boresight_z: float = Field(1.0, description="바디 프레임 보어사이트 방향 벡터 z")
+
+
+class SettlingResultSchema(BaseModel):
+    settled: bool
+    settling_time: float | None
+    settling_timestamp: float | None
+    final_error: float | None
+    status: str
+
+
+class SaturationEventSchema(BaseModel):
+    channel: str
+    timestamp: float
+    value: float
+    ratio: float
+    status: str
+
+
+class WheelSaturationReportSchema(BaseModel):
+    events: list[SaturationEventSchema]
+    max_ratio_by_channel: dict[str, float]
+    status: str
+
+
+class OpsStatusRequest(BaseModel):
+    satellite_id: str = Field(..., description="위성 코드 (예: O1A, E3T, O1B, BSS)")
+    start_time: datetime | str = Field(..., description="조회 시작 시각 (KST 또는 UTC)")
+    end_time: datetime | str = Field(..., description="조회 종료 시각 (KST 또는 UTC)")
+    merge_tolerance_sec: float = Field(1.0, description="HK 패킷 병합 시 asof 허용 오차(초)")
+
+    settling_tolerance_deg: float | None = Field(
+        None, description="정착 판정 허용 오차 [deg] (eigen_err 기준). None이면 정착 평가를 생략"
+    )
+    settling_hold_duration_sec: float = Field(30.0, description="정착 판정을 위해 tolerance 이내로 유지해야 하는 시간 [초]")
+    settling_warn_multiplier: float = Field(2.0, description="미정착 시 WARN/FAIL 경계 배수")
+
+    wheel_max_rpm: float | None = Field(
+        None, description="휠 최대 정격 회전속도 [RPM]. None이면 휠 포화 평가를 생략"
+    )
+    wheel_warn_ratio: float = Field(0.9, description="휠 포화 WARN 임계 비율")
+
+
+class OpsStatusResponse(BaseModel):
+    satellite_id: str
+    status: str
+    reasons: list[str]
+    settling: SettlingResultSchema | None = None
+    wheel_saturation: WheelSaturationReportSchema | None = None
