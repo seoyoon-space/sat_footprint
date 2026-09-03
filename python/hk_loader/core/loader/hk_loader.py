@@ -67,9 +67,9 @@ from config import build_mysql_connection_url
 
 from .schema_map import (
     DEFAULT_MERGE_TOLERANCE_SEC,
-    HK_PACKET_SCHEMA,
     MASTER_PACKET,
     PacketSpec,
+    get_hk_packet_schema,
 )
 from .time_sync import merge_packets, slice_time_range
 
@@ -119,7 +119,9 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
     return int(dt.astimezone(timezone.utc).timestamp())
 
 
-def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: float) -> dict[str, float]:
+def _build_tolerance_overrides(
+    schema: dict[str, PacketSpec], packet_names: list[str], merge_tolerance_sec: float
+) -> dict[str, float]:
     """패킷별 asof-merge 허용 오차를 PacketSpec.rate_hz로부터 계산.
 
     송신 주기가 느린 패킷은 허용 오차도 그만큼 넓혀야 매칭 실패로 인한 불필요한
@@ -128,9 +130,9 @@ def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: flo
     override한다(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
     """
     return {
-        name: max(merge_tolerance_sec, 0.5 / HK_PACKET_SCHEMA[name].rate_hz)
+        name: max(merge_tolerance_sec, 0.5 / schema[name].rate_hz)
         for name in packet_names
-        if HK_PACKET_SCHEMA[name].rate_hz > 0
+        if schema[name].rate_hz > 0
     }
 
 
@@ -283,15 +285,19 @@ class HKLoader:
             - KST 기준 날짜 문자열: "2026-08-20" 또는 "2026-08-20T12:00:00+09:00"
             - UTC ISO8601: "2026-08-20T00:00:00Z"
             - Unix epoch seconds: 1787203236
-        satellite_id:         위성 구분자 (O1A, E3T, O1B, BSS 등). None이면 필터 없음.
-        packets:               조회할 패킷 부분집합 (기본: HK_PACKET_SCHEMA 전체)
+        satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명을 위성별로
+                               고르는 데 쓰인다 (tbl_obs1a_hk* / tbl_obs1b_hk*) — 같은
+                               DB 안에 위성별 테이블만 분리돼 있음. None이면 O1A 기본값.
+                               (satellite_id_col이 설정된 경우엔 행 단위 필터에도 쓰인다.)
+        packets:               조회할 패킷 부분집합 (기본: 해당 위성의 스키마 전체)
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
-        packet_names = packets or list(HK_PACKET_SCHEMA.keys())
+        schema = get_hk_packet_schema(satellite_id)
+        packet_names = packets or list(schema.keys())
 
         def _fetch(name: str) -> pd.DataFrame:
-            spec = HK_PACKET_SCHEMA[name]
+            spec = schema[name]
             return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
 
         # 패킷별 조회는 서로 독립적인 DB 왕복(SHOW COLUMNS + SELECT)이므로 병렬 실행.
@@ -312,7 +318,7 @@ class HKLoader:
                 "Cannot establish a common timebase."
             )
 
-        tolerance_overrides = _build_tolerance_overrides(packet_names, merge_tolerance_sec)
+        tolerance_overrides = _build_tolerance_overrides(schema, packet_names, merge_tolerance_sec)
 
         merged = merge_packets(
             packet_frames,
@@ -533,30 +539,49 @@ def extract_attitude_columns(df: pd.DataFrame, verbose: bool = False) -> pd.Data
         print(f"[attitude-extract] vel_triplet detected: {vel_triplet}")
 
     # quaternions (various naming conventions)
-    quat_candidates = [
-        ["q0", "q1", "q2", "q3"],
-        ["q_eci2body_1", "q_eci2body_2", "q_eci2body_3", "q_eci2body_4"],
-        ["qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"],
-        ["q_body_wrt_eci_1", "q_body_wrt_eci_2", "q_body_wrt_eci_3", "q_body_wrt_eci_4"],
+    # Output convention: scalar-first (q0=w, q1=x, q2=y, q3=z)
+    # HK convention for qbodyWrtEci/q_eci2body: scalar-last (1=x, 2=y, 3=z, 4=w)
+    QUAT_SCALAR_LAST = [
+        (["qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"],
+         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
+        (["q_body_wrt_eci_1", "q_body_wrt_eci_2", "q_body_wrt_eci_3", "q_body_wrt_eci_4"],
+         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
+        (["q_eci2body_1", "q_eci2body_2", "q_eci2body_3", "q_eci2body_4"],
+         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
     ]
+    QUAT_SCALAR_FIRST = [
+        ["q0", "q1", "q2", "q3"],
+    ]
+
     quat_map = None
-    for candidate in quat_candidates:
+    scalar_first = True
+    for candidate in QUAT_SCALAR_FIRST:
         if all(name in df.columns for name in candidate):
             quat_map = candidate
             break
+    if quat_map is None:
+        for candidate, reorder in QUAT_SCALAR_LAST:
+            if all(name in df.columns for name in candidate):
+                quat_map = candidate
+                scalar_first = False
+                break
     if quat_map is None:
         raise ValueError(
             "Quaternion columns were not found. Expected one of: "
             "q0,q1,q2,q3 or q_eci2body_1..4 or qbody_wrt_eci1..4"
         )
 
-    q0, q1, q2, q3 = quat_map
+    if scalar_first:
+        q0, q1, q2, q3 = quat_map
+    else:
+        q0, q1, q2, q3 = reorder(quat_map)
     out["q0"] = df[q0]
     out["q1"] = df[q1]
     out["q2"] = df[q2]
     out["q3"] = df[q3]
     if verbose:
-        print(f"[attitude-extract] quat_map used: {quat_map}")
+        order_label = "scalar-first" if scalar_first else "scalar-last → reordered"
+        print(f"[attitude-extract] quat_map used: {quat_map} ({order_label})")
 
     # Ensure a stable column order and include NaN for any missing attitude fields
     final_cols = ["timestamp", "px", "py", "pz", "vx", "vy", "vz", "q0", "q1", "q2", "q3"]
@@ -657,11 +682,13 @@ def main() -> None:
         prefix = "hk_attitude" if args.attitude_only else "hk"
         args.output = _default_output_path(args.start_time, args.end_time, output_format=args.output_format, prefix=prefix)
 
+    # 실제 배포 환경은 위성별로 별도 DB가 아니라 같은 DB('nstanl') 안에서 테이블
+    # 접두어만 다르다 (get_hk_packet_schema 참고) — 그래서 for_satellite()(별도
+    # DB 커넥션 레지스트리)는 쓰지 않고, 항상 같은 커넥션으로 접속한 뒤
+    # satellite_id를 load()에 넘겨 테이블을 고른다.
     try:
         if args.connection_url:
             loader = HKLoader(args.connection_url)
-        elif args.satellite_id:
-            loader = HKLoader.for_satellite(args.satellite_id)
         else:
             loader = HKLoader.from_env()
     except ValueError as exc:
@@ -669,14 +696,14 @@ def main() -> None:
             2,
             "\nDB connection configuration is missing or incomplete.\n"
             "1) Copy '.env.example' to '.env' and fill in the real MYSQL_* values\n"
-            "2) Or provide --connection-url / --satellite-id\n"
+            "2) Or provide --connection-url\n"
             f"Details: {exc}\n",
         )
 
     df = loader.load(
         start_time=args.start_time,
         end_time=args.end_time,
-        satellite_id=None,
+        satellite_id=args.satellite_id,
         packets=args.packets,
         merge_tolerance_sec=args.merge_tolerance_sec,
         interpolate_gaps=not args.no_interpolate,

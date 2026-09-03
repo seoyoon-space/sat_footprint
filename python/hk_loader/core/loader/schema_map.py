@@ -442,44 +442,55 @@ HK6_FIELDS = (
 # 실제 DB 스키마는 MySQL schema 'nstanl' 안에 tbl_obs1a_hk1 / tbl_obs1a_hk2 ... 형식으로
 # 구성되어 있으며, 시간값은 Unix epoch UTC(초) 기준으로 저장됩니다.
 # 따라서 table 이름과 time 컬럼을 실제 구조에 맞춰 재정의한다.
-HK_PACKET_SCHEMA: dict[str, PacketSpec] = {
-    "hk1": PacketSpec(
-        table="tbl_obs1a_hk1",
-        time_col="timeUtc",
-        fields=_field_map(*HK1_FIELDS),
-        rate_hz=1.0,
-    ),
-    "hk2": PacketSpec(
-        table="tbl_obs1a_hk2",
-        time_col="timeUtc",
-        fields=_field_map(*HK2_FIELDS),
-        rate_hz=1.0,
-    ),
-    "hk3": PacketSpec(
-        table="tbl_obs1a_hk3",
-        time_col="timeUtc",
-        fields=_field_map(*HK3_FIELDS),
-        rate_hz=1.0,
-    ),
-    "hk4": PacketSpec(
-        table="tbl_obs1a_hk4",
-        time_col="timeUtc",
-        fields=_field_map(*HK4_FIELDS),
-        rate_hz=1.0,
-    ),
-    "hk5": PacketSpec(
-        table="tbl_obs1a_hk5",
-        time_col="timeUtc",
-        fields=_field_map(*HK5_FIELDS),
-        rate_hz=1.0,
-    ),
-    "hk6": PacketSpec(
-        table="tbl_obs1a_hk6",
-        time_col="timeUtc",
-        fields=_field_map(*HK6_FIELDS),
-        rate_hz=1.0,
-    ),
+#
+# O1A/O1B는 같은 버스 설계라 hk1~hk6 컬럼 구조가 동일하고, 같은 DB('nstanl') 안에
+# 위성별로 테이블만 분리되어 있다 (tbl_obs1a_hk* / tbl_obs1b_hk*) — 확인됨
+# (SHOW TABLES 결과, posWrtEci/velWrtEci/qbodyWrtEci 등 자세 컬럼 동일).
+HK1_FIELDS_MAP = _field_map(*HK1_FIELDS)
+HK2_FIELDS_MAP = _field_map(*HK2_FIELDS)
+HK3_FIELDS_MAP = _field_map(*HK3_FIELDS)
+HK4_FIELDS_MAP = _field_map(*HK4_FIELDS)
+HK5_FIELDS_MAP = _field_map(*HK5_FIELDS)
+HK6_FIELDS_MAP = _field_map(*HK6_FIELDS)
+
+# satellite_id -> 테이블명에 쓰이는 접두어 (tbl_{prefix}_hk1 ...)
+SATELLITE_TABLE_PREFIX: dict[str, str] = {
+    "O1A": "obs1a",
+    "O1B": "obs1b",
 }
+
+
+def _build_packet_schema(table_prefix: str) -> dict[str, PacketSpec]:
+    return {
+        "hk1": PacketSpec(table=f"tbl_{table_prefix}_hk1", time_col="timeUtc", fields=HK1_FIELDS_MAP, rate_hz=1.0),
+        "hk2": PacketSpec(table=f"tbl_{table_prefix}_hk2", time_col="timeUtc", fields=HK2_FIELDS_MAP, rate_hz=1.0),
+        "hk3": PacketSpec(table=f"tbl_{table_prefix}_hk3", time_col="timeUtc", fields=HK3_FIELDS_MAP, rate_hz=1.0),
+        "hk4": PacketSpec(table=f"tbl_{table_prefix}_hk4", time_col="timeUtc", fields=HK4_FIELDS_MAP, rate_hz=1.0),
+        "hk5": PacketSpec(table=f"tbl_{table_prefix}_hk5", time_col="timeUtc", fields=HK5_FIELDS_MAP, rate_hz=1.0),
+        "hk6": PacketSpec(table=f"tbl_{table_prefix}_hk6", time_col="timeUtc", fields=HK6_FIELDS_MAP, rate_hz=1.0),
+    }
+
+
+HK_PACKET_SCHEMA_BY_SATELLITE: dict[str, dict[str, PacketSpec]] = {
+    sat_id: _build_packet_schema(prefix) for sat_id, prefix in SATELLITE_TABLE_PREFIX.items()
+}
+
+# Backward-compatible default (O1A) for callers that don't pass a satellite_id.
+HK_PACKET_SCHEMA: dict[str, PacketSpec] = HK_PACKET_SCHEMA_BY_SATELLITE["O1A"]
+
+
+def get_hk_packet_schema(satellite_id: str | None) -> dict[str, PacketSpec]:
+    """satellite_id(O1A/O1B)에 맞는 hk1~hk6 PacketSpec 세트를 반환. None이면 O1A 기본값."""
+    if not satellite_id:
+        return HK_PACKET_SCHEMA
+    sat = satellite_id.upper()
+    if sat not in HK_PACKET_SCHEMA_BY_SATELLITE:
+        raise ValueError(
+            f"No HK packet schema registered for satellite_id='{sat}'. "
+            f"Available: {list(HK_PACKET_SCHEMA_BY_SATELLITE)}"
+        )
+    return HK_PACKET_SCHEMA_BY_SATELLITE[sat]
+
 
 MASTER_PACKET = "hk1"
 DEFAULT_MERGE_TOLERANCE_SEC = 1.0
