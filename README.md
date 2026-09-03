@@ -20,6 +20,22 @@ Users can provide KST or UTC timestamps in friendly formats such as:
 
 The loader converts those inputs into UTC epoch seconds for DB queries and normalizes the merged output to a standard `time` column in the DataFrame.
 
+## Getting the code
+
+```bash
+git clone https://github.com/seoyoon-space/sat_footprint.git
+cd sat_footprint
+git checkout doeun-space
+```
+
+## Setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
 ## Environment configuration
 
 Copy `.env.example` to `.env` and update the values.
@@ -197,6 +213,28 @@ Health check (no auth required):
 curl http://localhost:8000/health
 ```
 
+### Interactive API docs
+
+FastAPI auto-generates these from the code - no separate spec to maintain:
+
+- `http://localhost:8000/docs` - Swagger UI (browse every endpoint's request/response schema, and call them directly with "Try it out")
+- `http://localhost:8000/redoc` - ReDoc, read-only reference view
+- `http://localhost:8000/openapi.json` - raw OpenAPI spec (for generating a client)
+
+### Endpoint summary
+
+| Endpoint | Purpose | Input driver |
+|---|---|---|
+| `POST /telemetry/query` | Raw merged HK telemetry records | `satellite_id` + time range (real DB) |
+| `POST /telemetry/czml` | Satellite ground track + attitude for Cesium | `satellite_id` + time range (real DB) |
+| `POST /footprint/rays` | Camera ray (ECEF origin + 5 unit directions), no terrain intersection - for a caller with its own DEM | `satellite_id` + time range (real DB) |
+| `POST /footprint/track` | Footprint polygon per timestamp (GeoJSON), WGS-84 ellipsoid approximation | `satellite_id` + time range (real DB) |
+| `POST /footprint/track/czml` | Same, as CZML scoped by `availability` so Cesium transitions it over time | `satellite_id` + time range (real DB) |
+| `POST /footprint/compute` | One footprint polygon (GeoJSON) for a manually given position/attitude | manual position + quaternion |
+| `POST /footprint/czml` | Same, as a single CZML packet | manual position + quaternion |
+| `POST /validator/ops-status` | Settling-time / wheel-saturation PASS/WARN/FAIL | `satellite_id` + time range (real DB) |
+| `GET /health` | Liveness check, no auth | - |
+
 ### Authentication
 
 If `API_KEY` is set in `.env`, `/telemetry/*`, `/footprint/*`, and `/validator/*` require an
@@ -255,6 +293,18 @@ resp = requests.post(
 
 print(resp.status_code)
 print(resp.json())
+```
+
+CZML ground track + attitude (loads directly into a `Cesium.CzmlDataSource`):
+
+```bash
+curl -X POST "http://localhost:8000/telemetry/czml?coordinate_frame=ecef" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T01:00:00Z"
+  }'
 ```
 
 ### Camera footprint (no DB, stateless)
