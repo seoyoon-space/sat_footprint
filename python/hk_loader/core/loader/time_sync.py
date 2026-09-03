@@ -28,14 +28,19 @@ def merge_packets(
     tolerance_sec: float = 1.0,
     interpolate_gaps: bool = True,
     max_interp_gap_sec: float | None = 10.0,
+    tolerance_overrides: dict[str, float] | None = None,
 ) -> pd.DataFrame:
     """
     packet_frames: {packet_name: DataFrame(columns=[time_col(as 'time'), <canonical fields>...])}
                     -> hk_loader.py에서 이미 canonical 컬럼명 + 'time' 컬럼으로 정리해서 넘겨줌
     master_key:     기준이 될 패킷 이름 (예: "hk1")
-    tolerance_sec:  asof merge 허용 오차(초)
+    tolerance_sec:  asof merge 허용 오차(초). 패킷별 override가 없으면 이 값을 사용.
     interpolate_gaps: True면 남은 결측치를 시간 기반 선형보간으로 채움
     max_interp_gap_sec: 이 값보다 큰 결측 구간은 보간하지 않고 NaN 유지 (외삽 방지)
+    tolerance_overrides: {packet_name: tolerance_sec} 형태로 패킷별 허용 오차를 개별
+        지정. 송신 주기가 느린 패킷(예: 10초 간격)에 전역 tolerance_sec(예: 1초)를
+        그대로 쓰면 대부분의 마스터 타임스탬프가 매칭에 실패해 NaN이 되므로,
+        hk_loader.py는 PacketSpec.rate_hz로부터 이 값을 계산해서 넘겨준다.
 
     반환: 'time' 컬럼 + 모든 canonical 필드가 합쳐진 단일 DataFrame
     """
@@ -45,7 +50,8 @@ def merge_packets(
     master = _ensure_utc(packet_frames[master_key], "time")
     merged = master
 
-    tol = pd.Timedelta(seconds=tolerance_sec)
+    overrides = tolerance_overrides or {}
+    default_tol = pd.Timedelta(seconds=tolerance_sec)
 
     for name, df in packet_frames.items():
         if name == master_key:
@@ -56,6 +62,7 @@ def merge_packets(
         duplicate_cols = [c for c in df.columns if c in merged.columns and c != "time"]
         for col in duplicate_cols:
             df = df.rename(columns={col: f"{col}_{name}"})
+        tol = pd.Timedelta(seconds=overrides[name]) if name in overrides else default_tol
         merged = pd.merge_asof(
             merged,
             df,
@@ -68,23 +75,26 @@ def merge_packets(
         merged = merged.set_index("time")
         value_cols = [c for c in merged.columns if pd.api.types.is_numeric_dtype(merged[c])]
 
-        if max_interp_gap_sec is not None:
-            # 큰 결측 구간은 보간에서 제외하기 위해 마스크 생성
-            for col in value_cols:
-                valid = merged[col].notna()
-                if valid.sum() < 2:
-                    continue
-                gap = (
-                    merged.index.to_series()
-                    .where(valid)
-                    .ffill()
-                    .sub(merged.index.to_series())
-                    .abs()
-                )
-                # placeholder: 실제 seconds 갭 계산은 아래에서 다시 처리
-
         if value_cols:
-            merged[value_cols] = merged[value_cols].interpolate(method="time", limit_area="inside")
+            original = merged[value_cols]
+            interpolated = original.interpolate(method="time", limit_area="inside")
+
+            if max_interp_gap_sec is not None:
+                times = merged.index.to_series()
+                for col in value_cols:
+                    valid_mask = original[col].notna()
+                    if valid_mask.sum() < 2:
+                        continue
+                    # 각 결측 지점 양옆의 가장 가까운 실측값 시각을 찾아 그 간격(초)을 구하고,
+                    # max_interp_gap_sec을 넘는 구간은 보간값을 다시 NaN으로 되돌려 외삽을 방지한다.
+                    valid_times = times.where(valid_mask)
+                    prev_valid_time = valid_times.ffill()
+                    next_valid_time = valid_times.bfill()
+                    gap_sec = (next_valid_time - prev_valid_time).dt.total_seconds()
+                    too_big = (gap_sec > max_interp_gap_sec) & ~valid_mask
+                    interpolated.loc[too_big, col] = float("nan")
+
+            merged[value_cols] = interpolated
         merged = merged.reset_index()
 
     return merged

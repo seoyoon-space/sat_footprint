@@ -1,12 +1,11 @@
-﻿"""
+"""
 실행 가이드
 
 1. 실행 환경
-   - Python 3.11 이상 권장 (.venv : py install 3.13) 
+   - Python 3.11 이상 권장
    - venv 생성 후 설치하기 !:
        python -m venv .venv
-    ./.venv/Scripts/Activate.ps1
-       오류 발생시 후 다시 venv 확인) Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned    
+    .venv/Scripts/Activate.ps1
        python -m pip install --upgrade pip
        python -m pip install -r requirements.txt
 
@@ -24,7 +23,7 @@
    - 전체 HK 데이터 로드 :
        python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output hk_full.csv
    - 자세 전용 컬럼만 추출:
-       python -m core.loader.hk_loader --start-time "2026-08-08" --end-time "2026-08-09" --attitude-only --verbose --output-format csv
+       python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --attitude-only --output hk_attitude.csv
    - 텍스트 출력:
        python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output-format txt --output hk_full.txt
    - 라이브러리 호출:
@@ -54,6 +53,8 @@ import argparse
 import json
 import logging
 import numbers
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -95,15 +96,15 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
             dt = dt.replace(tzinfo=KST)
         return int(dt.astimezone(timezone.utc).timestamp())
 
-    text = str(value).strip()
-    if not text:
+    text_value = str(value).strip()
+    if not text_value:
         raise ValueError("time value is empty")
 
-    if text.isdigit():
-        return int(text)
+    if text_value.isdigit():
+        return int(text_value)
 
-    if len(text) == 10 and text.count("-") == 2 and text[4] == "-" and text[7] == "-":
-        dt = datetime.fromisoformat(text)
+    if len(text_value) == 10 and text_value.count("-") == 2 and text_value[4] == "-" and text_value[7] == "-":
+        dt = datetime.fromisoformat(text_value)
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=KST)
         if is_end:
@@ -112,10 +113,25 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
             dt = dt.replace(hour=0, minute=0, second=0, microsecond=0)
         return int(dt.astimezone(timezone.utc).timestamp())
 
-    dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    dt = datetime.fromisoformat(text_value.replace("Z", "+00:00"))
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=KST)
     return int(dt.astimezone(timezone.utc).timestamp())
+
+
+def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: float) -> dict[str, float]:
+    """패킷별 asof-merge 허용 오차를 PacketSpec.rate_hz로부터 계산.
+
+    송신 주기가 느린 패킷은 허용 오차도 그만큼 넓혀야 매칭 실패로 인한 불필요한
+    NaN을 피할 수 있다. 패킷 주기(1/rate_hz)의 절반을 자연스러운 최소 허용 오차로
+    보고, 사용자가 지정한 merge_tolerance_sec보다 더 넓게 필요한 패킷에 한해서만
+    override한다(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
+    """
+    return {
+        name: max(merge_tolerance_sec, 0.5 / HK_PACKET_SCHEMA[name].rate_hz)
+        for name in packet_names
+        if HK_PACKET_SCHEMA[name].rate_hz > 0
+    }
 
 
 class HKLoader:
@@ -129,6 +145,11 @@ class HKLoader:
         """
         self.engine = engine or create_engine(connection_url, pool_pre_ping=True)
         self.satellite_id_col = satellite_id_col
+        # 테이블 스키마(컬럼 목록)는 런타임 중 바뀌지 않으므로 인스턴스 단위로 캐시.
+        # HKLoader는 api/routes.py, api/czml_routes.py에서 lru_cache로 재사용되므로
+        # 이 캐시는 단일 load() 호출 내 중복 조회뿐 아니라 이후 API 요청들에도 재사용된다.
+        self._columns_cache: dict[str, set[str]] = {}
+        self._columns_cache_lock = threading.Lock()
 
     @classmethod
     def from_env(cls, *, connection_url: str | None = None, schema: str | None = None) -> "HKLoader":
@@ -150,9 +171,21 @@ class HKLoader:
         return cls(connection_url=db_config.connection_url, satellite_id_col=None)
 
     def _get_table_columns(self, table_name: str) -> set[str]:
-        with self.engine.connect() as conn:
-            rows = conn.exec_driver_sql(f"SHOW COLUMNS FROM `{table_name}`").fetchall()
-        return {str(row[0]) for row in rows}
+        cached = self._columns_cache.get(table_name)
+        if cached is not None:
+            return cached
+
+        with self._columns_cache_lock:
+            # 락 대기 중 다른 스레드가 이미 채웠을 수 있으므로 재확인(double-checked locking).
+            cached = self._columns_cache.get(table_name)
+            if cached is not None:
+                return cached
+
+            with self.engine.connect() as conn:
+                rows = conn.exec_driver_sql(f"SHOW COLUMNS FROM `{table_name}`").fetchall()
+            columns = {str(row[0]) for row in rows}
+            self._columns_cache[table_name] = columns
+            return columns
 
     def _resolve_time_column(self, table_name: str, preferred: str) -> str:
         columns = self._get_table_columns(table_name)
@@ -256,11 +289,22 @@ class HKLoader:
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
         packet_names = packets or list(HK_PACKET_SCHEMA.keys())
-        packet_frames: dict[str, pd.DataFrame] = {}
 
-        for name in packet_names:
+        def _fetch(name: str) -> pd.DataFrame:
             spec = HK_PACKET_SCHEMA[name]
-            packet_frames[name] = self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
+            return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
+
+        # 패킷별 조회는 서로 독립적인 DB 왕복(SHOW COLUMNS + SELECT)이므로 병렬 실행.
+        # executor.map은 입력 순서대로 결과를 반환하므로(완료 순서가 아님) 아래 dict의
+        # 삽입 순서는 순차 실행과 동일하게 packet_names 순서를 유지 -> merge_packets
+        # 결과(중복 컬럼 접미사 처리 등)는 이전과 동일하다.
+        if len(packet_names) > 1:
+            with ThreadPoolExecutor(max_workers=min(len(packet_names), 8)) as executor:
+                fetched = list(executor.map(_fetch, packet_names))
+        else:
+            fetched = [_fetch(name) for name in packet_names]
+
+        packet_frames: dict[str, pd.DataFrame] = dict(zip(packet_names, fetched))
 
         if MASTER_PACKET not in packet_frames or packet_frames[MASTER_PACKET].empty:
             raise ValueError(
@@ -268,11 +312,14 @@ class HKLoader:
                 "Cannot establish a common timebase."
             )
 
+        tolerance_overrides = _build_tolerance_overrides(packet_names, merge_tolerance_sec)
+
         merged = merge_packets(
             packet_frames,
             master_key=MASTER_PACKET,
             tolerance_sec=merge_tolerance_sec,
             interpolate_gaps=interpolate_gaps,
+            tolerance_overrides=tolerance_overrides,
         )
 
         merged = slice_time_range(merged, start_epoch, end_epoch)
@@ -315,8 +362,8 @@ def _default_output_path(
         start_dt = pd.Timestamp(_normalize_query_time(start_time, is_end=False), unit="s", tz="UTC")
         end_dt = pd.Timestamp(_normalize_query_time(end_time, is_end=True), unit="s", tz="UTC")
     except Exception:
-        start_dt = pd.Timestamp.utcnow().tz_localize("UTC")
-        end_dt = pd.Timestamp.utcnow().tz_localize("UTC")
+        start_dt = pd.Timestamp.now("UTC")
+        end_dt = pd.Timestamp.now("UTC")
 
     start_label = start_dt.strftime("%Y%m%dT%H%M%S")
     end_label = end_dt.strftime("%Y%m%dT%H%M%S")
@@ -569,20 +616,23 @@ def df_to_czml(df: pd.DataFrame, *, id_prefix: str = "hk", time_col: str = "time
     This produces a simple CZML that a Cesium app can ingest; time-dynamic properties are
     represented as separate packets at different times.
     """
+    columns = list(df.columns)
+    time_pos = columns.index(time_col)
+    other_cols = [(pos, col) for pos, col in enumerate(columns) if col != time_col]
+
     czml = [{"id": "document", "version": "1.0"}]
-    for i, row in df.reset_index(drop=True).iterrows():
+    # iterrows()는 행마다 혼합 dtype Series를 새로 생성해 느리므로, 원본 dtype을
+    # 그대로 보존하는 itertuples(name=None)로 순회(core.coordinates.build_cesium_track_czml와 동일 방식).
+    for i, row in enumerate(df.itertuples(index=False, name=None)):
         pkt: dict[str, Any] = {"id": f"{id_prefix}_{i}"}
-        t = row[time_col]
+        t = row[time_pos]
         if isinstance(t, pd.Timestamp):
             time_iso = t.tz_convert("UTC").isoformat()
         else:
             time_iso = pd.to_datetime(t, utc=True).isoformat()
         pkt["time"] = time_iso
-        # add properties
-        for col in df.columns:
-            if col == time_col:
-                continue
-            pkt[col] = _sanitize_value(row[col])
+        for pos, col in other_cols:
+            pkt[col] = _sanitize_value(row[pos])
         czml.append(pkt)
     return czml
 
