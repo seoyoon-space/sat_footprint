@@ -1,0 +1,212 @@
+================================================================================
+ EP (Event Planner) Server API Reference
+ sat_footprint 프로젝트 연동용
+================================================================================
+
+Server: http://192.168.0.82:8080
+Swagger: http://192.168.0.82:8080/swagger/index.html
+Auth:    없음 (내부 네트워크, 인증 불필요)
+Source:  hk-dashboard/satops/ep_client.py
+
+
+================================================================================
+ 1. AOI 목록 조회
+================================================================================
+
+GET /api/AOI/list?pageNumber={n}&pageSize={size}
+
+Parameters:
+  pageNumber  int  (default: 1)
+  pageSize    int  (default: 100)
+
+Response:
+{
+  "items": [
+    {
+      "name": "인도네시아_리아우_부아탄_팜트리",
+      "description": "NST-오형직 요청",
+      "latitude": 0.7216,
+      "longitude": 101.747,
+      "altitude": 8,
+      "dueDate": "2026-09-01T00:00:00",
+      "englishName": "IDN_Riau_Buatan_PalmTree"
+    }
+  ],
+  "totalCount": 14,
+  "pageNumber": 1,
+  "pageSize": 3,
+  "totalPages": 5
+}
+
+Python 예시:
+  import requests
+  r = requests.get("http://192.168.0.82:8080/api/AOI/list",
+                    params={"pageNumber": 1, "pageSize": 1000})
+  aois = r.json()["items"]
+
+
+================================================================================
+ 2. AOI Set 조회
+================================================================================
+
+GET /api/AOI/AOISet
+
+Response:
+[
+  {
+    "fileName": "AOI_List",
+    "aoiList": [
+      "인도네시아_리아우_부아탄_팜트리",
+      "브라질_파라나_쿠리치바",
+      ...
+    ]
+  }
+]
+
+
+================================================================================
+ 3. AOI 생성
+================================================================================
+
+POST /api/AOI
+
+Body (JSON):
+{
+  "name": "AOI_이름",
+  "description": "설명",
+  "latitude": 37.5665,
+  "longitude": 126.978,
+  "altitude": 0
+}
+
+
+================================================================================
+ 4. AOI Set 생성
+================================================================================
+
+POST /api/AOI/AOISet
+
+Body (JSON):
+{
+  "fileName": "My_AOI_Set",
+  "aoiList": ["AOI_이름1", "AOI_이름2"]
+}
+
+
+================================================================================
+ 5. Mission 목록 조회 (selected)
+================================================================================
+
+GET /api/Mission/selected?SatelliteId={sat}&Type={type}&StartTime={start}&EndTime={end}
+
+Parameters:
+  SatelliteId  string  필수  "O1A" | "O1B" | "E3T"
+  Type         string  필수  "MT" (촬영미션) | "GS" (지상국통신)
+  StartTime    string  선택  ISO8601 (예: 2026-01-01T00:00:00Z)
+  EndTime      string  선택  ISO8601
+
+Response (예시, O1A MT):
+[
+  {
+    "id": 6,
+    "satelliteId": "O1A",
+    "scheduleType": 1,
+    "scheduleId": "O1A_13419_GGD",
+    "operationId": "GGD",
+    "scheduleMissionStatus": "None",
+    "satelliteImageStatus": "None",
+    "eventStart": "2026-04-10T03:01:54.375",
+    "eventStartKST": "2026-04-10T12:01:54.375",
+    "eventEnd": "2026-04-10T03:01:57.25",
+    "eventEndKST": "2026-04-10T12:01:57.25",
+    "location": "GGD",
+    "duration": 2.875,
+    "maxEl": 0,
+    "latitude": 37.4299,
+    "longitude": 125.2288,
+    "cloudAmount": -1,
+    "requestedScanTime": 9.2,
+    "note": null,
+    "results": null
+  }
+]
+
+Python 예시:
+  r = requests.get("http://192.168.0.82:8080/api/Mission/selected",
+                    params={"SatelliteId": "O1A", "Type": "MT",
+                            "StartTime": "2026-01-01T00:00:00Z",
+                            "EndTime": "2026-12-31T23:59:59Z"})
+  missions = r.json()
+
+
+================================================================================
+ 6. Mission 업데이트
+================================================================================
+
+PATCH /api/Mission/selected
+
+Body (JSON): MissionDto 전체 객체 (id 필수)
+
+
+================================================================================
+ 7. Mission 삭제
+================================================================================
+
+DELETE /api/Mission/selected
+
+Body (JSON): [id1, id2, ...]  (int 배열)
+
+
+================================================================================
+ 8. Mission 예약 확정
+================================================================================
+
+POST /api/Mission/{id}/reserve?missionType={type}
+
+Parameters:
+  id           int     path    미션 ID
+  missionType  int     query   선택
+
+
+================================================================================
+ 9. Mission 날씨 업데이트
+================================================================================
+
+PATCH /api/Mission/raw/weather       — raw 미션 날씨
+PATCH /api/Mission/selected/weather  — selected 미션 날씨
+
+Body (JSON): [id1, id2, ...]  (int 배열)
+
+
+================================================================================
+ 10. TLE 조회
+================================================================================
+
+GET /api/TLE/status/{satelliteId}
+
+Response:
+  currentTle 필드: "0 HEADER\r\n1 ...\r\n2 ..." (3줄 포맷)
+
+Python 예시:
+  r = requests.get("http://192.168.0.82:8080/api/TLE/status/O1A")
+  tle_str = r.json().get("currentTle", "")
+  lines = tle_str.strip().split("\r\n")
+  tle1, tle2 = lines[1], lines[2]
+
+
+================================================================================
+ 현재 확인된 데이터 (2026-08-31 기준)
+================================================================================
+
+AOI:     14개 등록 (인도네시아, 브라질, 베네수엘라, 북한, 대만, 미국 등)
+Mission: O1A MT 27건 (2026년)
+위성:    O1A, O1B, E3T
+
+
+================================================================================
+ 참고: hk-dashboard 원본 클라이언트
+================================================================================
+
+파일: hk-dashboard/satops/ep_client.py
+환경변수: SATOPS_API_URL (기본값: http://192.168.0.82:8080)
+Timeout: 10초

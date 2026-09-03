@@ -1,0 +1,338 @@
+/* Attitude Viewer — dark theme, extracted from hk-dashboard auto-cesium.css */
+
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#050505;color:#ccc;font-family:'Segoe UI',system-ui,sans-serif;overflow:hidden}
+
+/* ── Scrollbars — thin, translucent, no visible track ───── */
+*{scrollbar-width:thin;scrollbar-color:rgba(255,255,255,.18) transparent}
+*::-webkit-scrollbar{width:7px;height:7px}
+*::-webkit-scrollbar-track{background:transparent}
+*::-webkit-scrollbar-thumb{background:rgba(255,255,255,.16);border-radius:4px}
+*::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.3)}
+*::-webkit-scrollbar-corner{background:transparent}
+
+/* ── Layout ─────────────────────────────────────────────── */
+#app{display:flex;flex-direction:column;height:100vh}
+#header{
+  height:40px;display:flex;align-items:center;padding:0 18px;
+  background:#0A0A0A;border-bottom:1px solid #1A1A1A;
+  font-size:11px;font-weight:600;letter-spacing:.12em;color:#666;
+  gap:16px;flex-shrink:0;
+}
+#header .title{color:#999}
+#header .mission-input{
+  background:#111;border:1px solid #222;border-radius:3px;
+  color:#ccc;padding:2px 8px;font-size:11px;width:160px;
+}
+#header .load-btn{
+  background:#111;border:1px solid #333;border-radius:3px;
+  color:#aaa;padding:3px 12px;font-size:10px;cursor:pointer;
+  font-weight:600;letter-spacing:.08em;
+}
+#header .load-btn:hover{color:#fff;border-color:#555;background:#1a1a1a}
+
+/* ── Main Split ─────────────────────────────────────────── */
+#main-split{
+  flex:1;display:flex;overflow:hidden;
+}
+
+/* ── Sidebar Panel (AOI / Mission browser) ──────────────── */
+/* White-tinted glassmorphism, matching the landing page's floating panel. */
+#panel-sidebar{
+  width:340px;flex-shrink:0;
+  background:rgba(255,255,255,.06);
+  backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);
+  border-right:1px solid rgba(255,255,255,.14);
+  display:flex;flex-direction:column;overflow:hidden;
+}
+.sidebar-tabs{display:flex;flex-shrink:0;border-bottom:1px solid #1A1A1A}
+.sidebar-tab{
+  flex:1;padding:10px 0;background:#0A0A0A;border:none;border-bottom:2px solid transparent;
+  color:#666;font-size:11px;font-weight:700;letter-spacing:.1em;cursor:pointer;
+}
+.sidebar-tab:hover{color:#aaa}
+.sidebar-tab.active{color:#DDD;border-bottom-color:#00e5ff}
+
+.sidebar-pane{display:none;flex-direction:column;flex:1;min-height:0;padding:10px;gap:8px}
+.sidebar-pane.active{display:flex}
+
+.sidebar-search{
+  background:#111;border:1px solid #222;border-radius:3px;color:#ccc;
+  padding:6px 8px;font-size:11px;flex-shrink:0;
+}
+.sidebar-search:focus{outline:none;border-color:#444}
+
+.mission-daterange{display:flex;align-items:center;gap:5px;flex-shrink:0}
+.sidebar-date{
+  background:#111;border:1px solid #222;border-radius:3px;color:#ccc;
+  padding:5px 4px;font-size:11px;flex:1;min-width:0;color-scheme:dark;
+}
+.sidebar-date:focus{outline:none;border-color:#444}
+.daterange-sep{color:#555;font-size:11px}
+.sidebar-btn{
+  background:#111;border:1px solid #333;border-radius:3px;color:#aaa;
+  padding:5px 10px;font-size:11px;font-weight:600;letter-spacing:.05em;cursor:pointer;white-space:nowrap;
+}
+.sidebar-btn:hover{color:#fff;border-color:#555;background:#1a1a1a}
+.sidebar-btn.primary{color:#00e5ff;border-color:#0a5a66}
+.sidebar-btn.primary:hover{background:#062026}
+.sidebar-btn:disabled{opacity:.4;cursor:default;pointer-events:none}
+#btn-compute-footprint{padding:12px 14px;font-size:14px}
+
+.sidebar-list{flex:1;min-height:0;overflow-y:auto}
+.sidebar-empty{color:#555;font-size:11px;padding:14px 4px;text-align:center}
+
+.sidebar-item{
+  padding:8px 8px;border-radius:3px;cursor:pointer;border:1px solid transparent;
+  display:flex;flex-direction:column;gap:2px;
+}
+.sidebar-item:hover{background:#111}
+.sidebar-item.active{background:#0c1f22;border-color:#0a5a66}
+.item-name{font-size:12.1px;color:#ccc;font-weight:600}
+.item-aoi{font-size:11px;color:#7dd3fc}
+.item-meta{font-size:11.9px;color:#999;font-variant-numeric:tabular-nums}
+.item-badge{
+  display:inline-block;font-size:8.8px;font-weight:700;letter-spacing:.05em;
+  color:#8A8A8A;background:#000;border-radius:2px;padding:1px 5px;margin-right:5px;
+}
+.item-badge.status-success{color:#00ff6a}
+.item-badge.status-pending{color:#ffa726}
+.item-badge.status-info{color:#42a5f5}
+.item-badge.status-none{color:#666}
+
+.sidebar-selected{
+  flex-shrink:0;border-top:1px solid rgba(255,255,255,.14);padding:10px;
+  display:flex;flex-direction:column;gap:6px;
+  background:rgba(255,255,255,.05);
+}
+.selected-name{font-size:13.2px;color:#DDD;font-weight:700}
+.selected-meta{font-size:11.9px;color:#ccc;font-variant-numeric:tabular-nums;line-height:1.5}
+.selected-actions{display:flex;flex-direction:column;gap:6px}
+.selected-status{font-size:9.9px;color:#00e5ff;min-height:12px}
+.selected-status.error{color:#ff5a5a}
+.verified-note{color:#7dd3fc}
+.pending-note{color:#ffa726}
+
+.progress-bar{
+  position:relative;height:14px;background:#111;border:1px solid #222;border-radius:3px;
+  overflow:hidden;
+}
+.progress-fill{
+  position:absolute;inset:0 auto 0 0;width:0%;background:#00e5ff;opacity:.35;
+  transition:width .3s ease;
+}
+.progress-label{
+  position:relative;height:100%;display:flex;align-items:center;justify-content:center;
+  font-size:9.9px;color:#ccc;font-variant-numeric:tabular-nums;
+}
+
+/* ── Cesium Panel (70%) ────────────────────────────────── */
+#panel-cesium{
+  flex:7;position:relative;
+  background:#050505;
+  display:flex;flex-direction:column;
+}
+.cesium-viewport{
+  flex:1;position:relative;overflow:hidden;
+}
+#cesium-container{
+  position:absolute;inset:0;
+}
+.cesium-widget-credits{display:none !important}
+.cesium-viewer-toolbar,
+.cesium-viewer-bottom,
+.cesium-viewer-navigationContainer,
+.cesium-viewer-animationContainer,
+.cesium-viewer-timelineContainer{display:none !important}
+
+/* Info overlay */
+.cesium-label{
+  position:absolute;top:14px;left:16px;
+  font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:#8A8A8A;background:#000;padding:3px 8px;border-radius:2px;z-index:5;
+}
+.cesium-info{
+  position:absolute;top:12px;right:14px;
+  display:flex;flex-direction:column;align-items:flex-end;gap:4px;z-index:5;
+}
+.cesium-info-row{
+  font-size:9px;font-weight:500;letter-spacing:.08em;color:#8A8A8A;
+  background:#000;padding:3px 8px;border-radius:2px;white-space:nowrap;
+}
+
+/* Status message */
+#status-msg{
+  position:absolute;bottom:60px;left:16px;
+  font-size:10px;color:#555;z-index:5;
+}
+
+/* ── 2D Map Panel (30%) ─────────────────────────────────── */
+/* Starts collapsed (width 0) — appears once a mission/AOI is selected, via .visible
+   (see window.map2d.reveal() in map2d.js). The width itself snaps in instantly
+   (animating flex-grow forces continuous reflow of the map canvas underneath and
+   looks janky); only opacity fades, which is cheap and doesn't touch layout. */
+#panel-map2d{
+  flex-grow:0;flex-shrink:1;flex-basis:0%;min-width:0;position:relative;
+  background:#080808;border-left:1px solid transparent;
+  display:flex;flex-direction:column;overflow:hidden;
+  opacity:0;
+  transition:opacity .25s ease;
+}
+#panel-map2d.visible{
+  flex-grow:3;opacity:1;border-left-color:#1A1A1A;
+}
+.map2d-label{
+  position:absolute;top:14px;left:12px;
+  font-size:9px;font-weight:700;letter-spacing:.14em;text-transform:uppercase;
+  color:#8A8A8A;background:#000;padding:3px 8px;border-radius:2px;z-index:5;
+}
+#map2d-container{
+  flex:1;width:100%;height:100%;position:relative;min-height:0;
+}
+#map2d-container .maplibregl-canvas{cursor:crosshair}
+#map2d-info{
+  position:absolute;top:12px;right:12px;
+  font-size:9px;color:#8A8A8A;background:#000;padding:3px 8px;border-radius:2px;z-index:5;
+  font-variant-numeric:tabular-nums;
+}
+#map2d-legend{
+  position:absolute;bottom:8px;left:12px;
+  display:flex;gap:12px;z-index:5;
+}
+.legend-item{
+  font-size:9px;color:#888;display:flex;align-items:center;gap:4px;
+}
+.legend-swatch{
+  display:inline-block;width:8px;height:8px;border-radius:1px;
+}
+
+/* ── Playback Bar ───────────────────────────────────────── */
+#playback{
+  height:48px;background:#0D0D0D;border-top:1px solid #1A1A1A;
+  display:flex;align-items:center;padding:0 18px;gap:16px;flex-shrink:0;
+}
+.pb-time{
+  font-size:11px;font-weight:500;letter-spacing:.04em;color:#555;
+  font-variant-numeric:tabular-nums;min-width:160px;
+}
+.pb-scrubber{
+  flex:1;height:2px;background:#1E1E1E;border-radius:1px;
+  position:relative;cursor:pointer;
+}
+.pb-fill{width:0;height:100%;background:#3A3A3A;border-radius:1px}
+.pb-thumb{
+  position:absolute;top:50%;left:0;transform:translate(-50%,-50%);
+  width:10px;height:10px;border-radius:50%;background:#888;
+  transition:background .1s;cursor:pointer;
+}
+.pb-thumb:hover{background:#DDD}
+.pb-controls{display:flex;align-items:center;gap:8px}
+.pb-btn{
+  width:26px;height:26px;border-radius:4px;
+  border:1px solid #222;background:#0F0F0F;color:#666;
+  font-size:10px;cursor:pointer;
+  transition:color .12s,border-color .12s,background .12s;
+}
+.pb-btn:hover{color:#AAA;border-color:#333;background:#111}
+.pb-btn.play{color:#DDD;border-color:#333;background:#111}
+.pb-speed{display:flex;align-items:center;gap:6px;color:#777}
+.pb-speed-label{font-size:9px;letter-spacing:.14em;font-weight:600;color:#444}
+.pb-speed-btn{
+  width:20px;height:20px;border-radius:3px;border:1px solid #222;
+  background:#0F0F0F;color:#666;font-size:9px;cursor:pointer;
+}
+.pb-speed-val{font-size:10px;color:#777;min-width:32px;text-align:center}
+
+/* ── FOV Overlay ────────────────────────────────────────── */
+#fov-overlay{
+  position:absolute;bottom:8px;right:12px;
+  background:#0D0D0D;border:1px solid #1A1A1A;border-radius:4px;
+  padding:8px 12px;z-index:10;min-width:160px;
+  display:flex;flex-direction:column;gap:6px;
+  pointer-events:all;
+}
+.attitude-readout{
+  display:flex;flex-direction:column;gap:3px;
+  padding-bottom:2px;border-bottom:1px solid #1A1A1A;
+  font-size:10px;font-variant-numeric:tabular-nums;
+}
+.attitude-value{font-weight:600;letter-spacing:.08em}
+.attitude-value.roll{color:#FF3232}
+.attitude-value.pitch{color:#32FF32}
+.attitude-value.yaw{color:#3232FF}
+.fov-label{
+  font-size:9px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:#444;
+}
+.fov-slider-row{display:flex;align-items:center;gap:8px}
+#fov-slider{flex:1;height:2px;accent-color:#888;cursor:pointer}
+#fov-angle-display{
+  color:#777;font-size:10px;font-variant-numeric:tabular-nums;
+  min-width:28px;text-align:right;
+}
+.fov-toggle-row{display:flex;gap:4px}
+.fov-btn{
+  flex:1;height:22px;background:#0F0F0F;border:1px solid #222;border-radius:3px;
+  color:#666;font-size:9px;font-weight:600;letter-spacing:.08em;cursor:pointer;
+  transition:color .12s,border-color .12s,background .12s;
+}
+.fov-btn:hover{color:#AAA;border-color:#333;background:#111}
+.fov-btn.active{color:#DDD;border-color:#333;background:#111}
+
+/* ── Header back-link (viewer page → satellite select) ─── */
+#header .back-link{
+  color:#666;text-decoration:none;font-size:10px;font-weight:600;letter-spacing:.08em;
+  border:1px solid #222;border-radius:3px;padding:3px 10px;
+}
+#header .back-link:hover{color:#fff;border-color:#555;background:#1a1a1a}
+#header .spacer{flex:1}
+
+/* ── Satellite select landing page ──────────────────────── */
+#select-app{display:flex;flex-direction:column;height:100vh}
+.select-hint{font-size:11.6px;color:#555;font-weight:400;letter-spacing:.04em}
+#select-globe{flex:1;position:relative;overflow:hidden;background:#050505}
+#select-cesium-container{position:absolute;inset:0}
+#select-status{
+  position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  font-size:12.1px;color:#888;background:#000;padding:9px 18px;border-radius:4px;z-index:5;
+}
+#select-clock{
+  position:absolute;top:12px;right:14px;z-index:5;
+  font-variant-numeric:tabular-nums;
+}
+/* Floats over the globe as an app-style card on the left — replaces the separate
+   top header bar entirely, so this panel (with its own title) is all there is. */
+#select-cards{
+  position:absolute;top:14px;left:14px;bottom:14px;
+  width:308px;z-index:20;
+  display:flex;flex-direction:column;
+  padding:25px;
+  background:rgba(255,255,255,.07);
+  backdrop-filter:blur(14px) saturate(140%);-webkit-backdrop-filter:blur(14px) saturate(140%);
+  border:1px solid rgba(255,255,255,.22);border-radius:17px;
+  box-shadow:0 12px 36px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.15);
+}
+#select-cards-header{
+  display:flex;flex-direction:column;gap:7px;
+  padding-bottom:22px;margin-bottom:22px;border-bottom:1px solid rgba(255,255,255,.08);
+}
+#select-cards-header .title{
+  font-size:17px;font-weight:700;letter-spacing:.1em;color:#DDD;text-transform:uppercase;
+}
+#select-cards-list{
+  flex:1;display:flex;flex-direction:column;gap:20px;justify-content:center;
+}
+.sat-card{
+  --sat-color:#00e5ff;
+  width:100%;padding:25px;border:1px solid rgba(255,255,255,.14);border-radius:11px;
+  background:rgba(255,255,255,.04);
+  display:flex;flex-direction:column;align-items:center;gap:10px;cursor:pointer;
+  transition:border-color .15s,background .15s,transform .15s;
+}
+.sat-card:hover{border-color:var(--sat-color);background:rgba(255,255,255,.1);transform:translateY(-2px)}
+.sat-card-dot{
+  width:21.6px;height:21.6px;border-radius:50%;background:var(--sat-color);
+  box-shadow:0 0 13px var(--sat-color);
+}
+.sat-card-name{font-size:23.1px;font-weight:700;letter-spacing:.06em;color:#DDD}
+.sat-card-info{font-size:15.4px;color:#aaa;font-variant-numeric:tabular-nums;min-height:20px}
+.sat-card-sub{font-size:13.9px;color:#666;letter-spacing:.06em}

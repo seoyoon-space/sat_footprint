@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ satellite }} Attitude Viewer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css">
+  <link href="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@4/dist/maplibre-gl.js"></script>
+  <script src="https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js"></script>
+  <script>
+    // Lets fetch() calls in the JS files work whether the app is served at "/"
+    // or mounted under a prefix (e.g. http://host:8080/sat_footprint/).
+    window.APP_BASE_PATH = "{{ request.script_root }}";
+    window.APP_SATELLITE = "{{ satellite }}";
+    window.APP_HK_ENABLED = {{ hk_enabled | tojson }};
+  </script>
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <div id="header">
+      <a class="back-link" href="{{ request.script_root }}/">← 위성 선택</a>
+      <span class="title">{{ satellite }} ATTITUDE VIEWER</span>
+      <span class="spacer"></span>
+      <button class="load-btn" id="load-btn" onclick="window.hkCesium.startLiveTracking(window.APP_SATELLITE)">LIVE</button>
+    </div>
+
+    <!-- Main content: sidebar + 7:3 split -->
+    <div id="main-split">
+      <!-- Far left: Global AOI / Mission browser -->
+      <div id="panel-sidebar">
+        <div class="sidebar-tabs">
+          <button class="sidebar-tab active" id="tab-mission" data-tab="mission">MISSION</button>
+          <button class="sidebar-tab" id="tab-aoi" data-tab="aoi">AOI</button>
+        </div>
+
+        <div class="sidebar-pane active" id="pane-mission">
+          <div class="mission-daterange">
+            <input type="date" id="mission-start-date" class="sidebar-date" title="조회 시작일 (UTC)">
+            <span class="daterange-sep">~</span>
+            <input type="date" id="mission-end-date" class="sidebar-date" title="조회 종료일 (UTC)">
+            <button class="sidebar-btn" id="mission-refresh">조회</button>
+          </div>
+          <div class="sidebar-list" id="mission-list"><div class="sidebar-empty">Loading...</div></div>
+        </div>
+
+        <div class="sidebar-pane" id="pane-aoi">
+          <input class="sidebar-search" id="aoi-search" type="text" placeholder="검색 (이름/영문명)">
+          <div class="sidebar-list" id="aoi-list"><div class="sidebar-empty">Loading...</div></div>
+        </div>
+
+        <div class="sidebar-selected" id="sidebar-selected" style="display:none">
+          <div class="selected-name" id="selected-name">--</div>
+          <div class="selected-meta" id="selected-meta">--</div>
+          <div class="selected-actions">
+            <button class="sidebar-btn primary" id="btn-compute-footprint">궤도 + FOOTPRINT 조회</button>
+            <button class="sidebar-btn" id="btn-download-geojson" disabled title="먼저 FOOTPRINT를 계산해야 합니다">GeoJSON 다운로드</button>
+          </div>
+          <div class="selected-status" id="selected-status"></div>
+          <div class="progress-bar" id="progress-bar" style="display:none">
+            <div class="progress-fill" id="progress-fill"></div>
+            <div class="progress-label" id="progress-label">0%</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Left: Cesium 3D (70%) -->
+      <div id="panel-cesium">
+        <div class="cesium-viewport">
+          <div id="cesium-container"></div>
+          <div class="cesium-label">3D ORBIT</div>
+          <div class="cesium-info">
+            <div class="cesium-info-row" id="utc-clock">--</div>
+            <div class="cesium-info-row" id="alt-display">ALT  -- km</div>
+          </div>
+          <div id="status-msg"></div>
+        </div>
+      </div>
+
+      <!-- Right: 2D Footprint Map (30%) -->
+      <div id="panel-map2d">
+        <div class="map2d-label">FOOTPRINT MAP</div>
+        <div id="map2d-container"></div>
+        <div id="map2d-info"></div>
+        <div id="map2d-legend">
+          <span class="legend-item"><span class="legend-swatch" style="background:#00e5ff"></span>Computed footprint</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#ffd600;opacity:.4"></span>Mission scan time</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#9b30ff;opacity:.6"></span>Real capture (camera ON~OFF)</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#ff0"></span>Target</span>
+          <span class="legend-item"><span class="legend-swatch" style="background:#ff4081"></span>Current line</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Playback bar -->
+    <div id="playback">
+      <div class="pb-time" id="pb-time-label">--</div>
+      <div class="pb-scrubber" id="scrubber">
+        <div class="pb-fill" id="pb-fill"></div>
+        <div class="pb-thumb" id="pb-thumb"></div>
+      </div>
+      <div class="pb-controls">
+        <button class="pb-btn" id="pb-first">⏮</button>
+        <button class="pb-btn" id="pb-backward">⏴</button>
+        <button class="pb-btn play" id="play-btn">⏸</button>
+        <button class="pb-btn" id="pb-forward">⏵</button>
+        <button class="pb-btn" id="pb-last">⏭</button>
+      </div>
+      <div class="pb-speed">
+        <span class="pb-speed-label">SPEED</span>
+        <button class="pb-speed-btn" id="pb-speed-down">-</button>
+        <span class="pb-speed-val" id="speed-val">10x</span>
+        <button class="pb-speed-btn" id="pb-speed-up">+</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='cesium-viewer.js') }}"></script>
+  <script src="{{ url_for('static', filename='map2d.js') }}"></script>
+  <script src="{{ url_for('static', filename='sidebar.js') }}"></script>
+  <script>
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        // Real-time TLE tracking works regardless of HK DB status (it doesn't use HK
+        // telemetry) — it's the default view until the user computes a mission's footprint.
+        window.hkCesium.startLiveTracking(window.APP_SATELLITE);
+        if (!window.APP_HK_ENABLED) {
+          var statusEl = document.getElementById('status-msg');
+          if (statusEl) statusEl.textContent = window.APP_SATELLITE + '는 아직 HK 텔레메트리 연동이 없습니다 — 미션 조회만 가능합니다.';
+        }
+      }, 1000);
+    });
+  </script>
+</body>
+</html>

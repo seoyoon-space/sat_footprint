@@ -1,0 +1,16 @@
+{
+  "_comment": "카메라(EOC) 마운팅 보정값 — 위성별. 출처: AC_TBL_UNIT_VECTOR_X/Y/Z (Index 8) EOC Misalignment_fixed 파라미터 테이블. Nominal boresight은 body +Z이고, 여기 벡터는 Z축 마운팅 각 보정을 반영한 실측(as-built) unit vector. O1A는 아직 보정값이 없어 무보정(0,0,0) 상태 — SensorConfig/SensorSpec의 mounting_error_deg(X축 단일 스칼라 회전, 항상 0.0)와는 별개의 값. FootprintCalculator.java(SensorCalibration.java가 이 파일을 로드)에 연결되어 실제 footprint 계산에 반영됨 — 'calibrated' 필드는 참고용 표기일 뿐 코드에서 읽지 않음(실제 분기는 벡터의 norm으로 판단).",
+  "O1A": {
+    "eoc_misalignment_unit_vector": [0.0, 0.0, 0.0],
+    "calibrated": false
+  },
+  "O1B": {
+    "eoc_misalignment_unit_vector": [0.012514, -0.003196, 0.999917],
+    "calibrated": true,
+    "source_params": {
+      "AC_TBL_UNIT_VECTOR_X_8": 0.012514,
+      "AC_TBL_UNIT_VECTOR_Y_8": -0.003196,
+      "AC_TBL_UNIT_VECTOR_Z_8": 0.999917
+    }
+  }
+}

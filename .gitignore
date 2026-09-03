@@ -30,18 +30,24 @@ venv/
 .DS_Store
 Thumbs.db
 
-# Data (large files - not tracked)
-data/
+# Data (large files - not tracked). "data/*" not "data/" so the !negation below
+# can still reach inside it — git won't descend into a wholesale-ignored directory.
+data/*
 orekit-data-master/
 tiles/
 *.bin
 *.tif
 *.tiff
+!data/sensor_calibration.json
 
 # Output
 footprints/
 *.csv
-!examples/*.csv
 
 # Environment
 .env
+.env.cesium
+secrets.toml
+
+# Claude Code local settings (personal overrides, not shared)
+.claude/settings.local.json

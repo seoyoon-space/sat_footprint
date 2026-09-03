@@ -1,5 +1,6 @@
 package footprint;
 
+import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.orekit.data.DataContext;
 import org.orekit.data.DirectoryCrawler;
 import org.orekit.time.AbsoluteDate;
@@ -13,13 +14,17 @@ import java.util.List;
  * CLI 진입점.
  *
  * args: <attitude_csv> <tile_index_json> <start_utc> <end_utc> <line_step> <output_csv>
- *       [orekit_data_path]
+ *       [orekit_data_path] [satellite_id] [sensor_calibration_json]
  *
  * attitude_csv: isoDate,px,py,pz,vx,vy,vz,q0,q1,q2,q3 (단위: m, m/s)
  * start_utc/end_utc: ISO8601 UTC (e.g. 2026-08-16T03:00:00)
  * line_step: 라인 계산 간격 (e.g. 100)
  * output_csv: 결과 저장 경로
  * orekit_data_path: (선택) Orekit 데이터 디렉토리, 기본값 "orekit-data-master"
+ * satellite_id: (선택) 기본값 "O1A" — sensor_calibration_json에서 EOC 마운팅 보정
+ *               unit vector를 찾을 때 쓰는 키.
+ * sensor_calibration_json: (선택) data/sensor_calibration.json 경로. 생략하거나
+ *               파일/위성 항목이 없으면 무보정(SensorCalibration 참고).
  */
 public class Main {
 
@@ -36,6 +41,8 @@ public class Main {
         int lineStep = Integer.parseInt(args[4]);
         String outputCsv = args[5];
         String orekitDataPath = args.length > 6 ? args[6] : "orekit-data-master";
+        String satelliteId = args.length > 7 && !args[7].isEmpty() ? args[7] : "O1A";
+        String sensorCalibrationPath = args.length > 8 ? args[8] : null;
 
         // Orekit 초기화
         File orekitData = new File(orekitDataPath);
@@ -69,8 +76,16 @@ public class Main {
         AbsoluteDate stopDate = new AbsoluteDate(
                 hkSamples.get(hkSamples.size() - 1).isoDate, TimeScalesFactory.getUTC());
 
+        Vector3D eocMisalignment = SensorCalibration.loadMisalignmentVector(sensorCalibrationPath, satelliteId);
+        if (eocMisalignment.getNorm() > 1e-9) {
+            System.out.printf("EOC misalignment: satellite=%s vector=(%.6f, %.6f, %.6f)%n",
+                    satelliteId, eocMisalignment.getX(), eocMisalignment.getY(), eocMisalignment.getZ());
+        } else {
+            System.out.println("EOC misalignment: none (satellite=" + satelliteId + ", 무보정)");
+        }
+
         FootprintCalculator calculator = new FootprintCalculator(
-                tileIndexPath, sensor, hkSamples, startDate, stopDate);
+                tileIndexPath, sensor, hkSamples, startDate, stopDate, eocMisalignment);
 
         // 계산 범위
         AbsoluteDate targetStart = new AbsoluteDate(startUtc, TimeScalesFactory.getUTC());

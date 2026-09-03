@@ -1,0 +1,34 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>위성 선택 — Attitude Viewer</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <script src="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Cesium.js"></script>
+  <link rel="stylesheet" href="https://cesium.com/downloads/cesiumjs/releases/1.119/Build/Cesium/Widgets/widgets.css">
+  <script src="https://unpkg.com/satellite.js@5.0.0/dist/satellite.min.js"></script>
+  <script>
+    window.APP_BASE_PATH = "{{ request.script_root }}";
+    window.APP_SATELLITES = {{ satellites | tojson }};
+  </script>
+</head>
+<body>
+  <div id="select-app">
+    <div id="select-globe">
+      <div id="select-cesium-container"></div>
+      <div id="select-status">TLE 로딩 중...</div>
+      <div id="select-clock" class="cesium-info-row">-- UTC</div>
+      <div id="select-cards">
+        <div id="select-cards-header">
+          <span class="title">SATELLITE SELECT</span>
+          <span class="select-hint">위성을 선택하면 상세 화면으로 이동합니다</span>
+        </div>
+        <div id="select-cards-list"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ url_for('static', filename='select.js') }}"></script>
+</body>
+</html>

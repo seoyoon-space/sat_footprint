@@ -1,5 +1,7 @@
 package footprint;
 
+import org.hipparchus.geometry.euclidean.threed.Rotation;
+import org.hipparchus.geometry.euclidean.threed.RotationConvention;
 import org.hipparchus.geometry.euclidean.threed.Vector3D;
 import org.hipparchus.util.FastMath;
 import org.orekit.bodies.GeodeticPoint;
@@ -39,7 +41,8 @@ public class FootprintCalculator {
 
     public FootprintCalculator(String tileIndexJsonPath, SensorSpec sensor,
                                 List<AttitudeRecord> hkSamples,
-                                AbsoluteDate startDate, AbsoluteDate stopDate) throws Exception {
+                                AbsoluteDate startDate, AbsoluteDate stopDate,
+                                Vector3D eocMisalignmentUnitVector) throws Exception {
 
         // LOS (Line-of-Sight) 벡터 목록 구성
         List<Vector3D> rawDirs = new ArrayList<>();
@@ -50,6 +53,16 @@ public class FootprintCalculator {
         LOSBuilder losBuilder = new LOSBuilder(rawDirs);
         losBuilder.addTransform(new FixedRotation("mounting", Vector3D.PLUS_I,
                 FastMath.toRadians(sensor.mountingErrorDeg)));
+
+        // EOC(카메라) 마운팅 보정 — nominal boresight(body +Z)을 실측 unit vector로
+        // 틀어주는 최소각 회전. data/sensor_calibration.json 참고. 미보정 위성(예: O1A,
+        // 벡터가 0)은 norm 0이라 회전을 건너뛴다 (no-op).
+        if (eocMisalignmentUnitVector != null && eocMisalignmentUnitVector.getNorm() > 1e-9) {
+            Rotation misalignment = new Rotation(Vector3D.PLUS_K, eocMisalignmentUnitVector.normalize());
+            losBuilder.addTransform(new FixedRotation("eoc_misalignment",
+                    misalignment.getAxis(RotationConvention.VECTOR_OPERATOR), misalignment.getAngle()));
+        }
+
         TimeDependentLOS los = losBuilder.build();
 
         // Datation + LineSensor
