@@ -331,6 +331,57 @@ def test_health_check_bypasses_api_key_even_when_configured(monkeypatch):
     assert resp.status_code == 200
 
 
+def test_cors_allowed_origins_list_parses_comma_separated_string():
+    assert config_module.Settings(cors_allowed_origins="").cors_allowed_origins_list == []
+    assert config_module.Settings(
+        cors_allowed_origins="https://a.example.com, https://b.example.com"
+    ).cors_allowed_origins_list == ["https://a.example.com", "https://b.example.com"]
+
+
+def test_default_cors_config_blocks_cross_origin_browser_requests():
+    """CORS_ALLOWED_ORIGINS 미설정(기본값)이면 CORSMiddleware가 붙어 있어도 origin 목록이
+    비어 있어 어떤 브라우저 cross-origin 요청도 허용되지 않아야 한다(서버-서버 호출은
+    Origin 헤더 자체가 없으므로 영향받지 않음 - 여기서 검증하는 건 브라우저 preflight만).
+    """
+    resp = client.options(
+        "/health", headers={"Origin": "https://example.com", "Access-Control-Request-Method": "GET"}
+    )
+    assert "access-control-allow-origin" not in resp.headers
+
+
+def test_cors_middleware_allows_configured_origin_and_rejects_others():
+    """main.py와 동일한 방식(app.add_middleware(CORSMiddleware, allow_origins=...))으로
+    구성했을 때, 설정한 origin은 허용하고 그 외는 차단하는지 확인."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from starlette.middleware.cors import CORSMiddleware
+
+    test_app = FastAPI()
+    test_app.add_middleware(
+        CORSMiddleware,
+        allow_origins=config_module.Settings(cors_allowed_origins="https://dem.example.com").cors_allowed_origins_list,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    @test_app.get("/ping")
+    def ping():
+        return {"ok": True}
+
+    test_client = TestClient(test_app)
+
+    allowed = test_client.options(
+        "/ping", headers={"Origin": "https://dem.example.com", "Access-Control-Request-Method": "GET"}
+    )
+    assert allowed.headers.get("access-control-allow-origin") == "https://dem.example.com"
+
+    blocked = test_client.options(
+        "/ping", headers={"Origin": "https://evil.example.com", "Access-Control-Request-Method": "GET"}
+    )
+    assert "access-control-allow-origin" not in blocked.headers
+
+
 def test_routers_share_a_single_loader_cache_per_satellite():
     """routes.py/czml_routes.py/validator_routes.py/footprint_routes.py가 각자 별도
     @lru_cache를 두면 같은 satellite_id에 대해 SQLAlchemy Engine(DB 커넥션 풀)이

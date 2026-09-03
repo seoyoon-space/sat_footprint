@@ -1,0 +1,26 @@
+# Docker 없이 uvicorn을 직접 systemd로 상시 구동하고 싶을 때 사용하는 유닛 파일.
+#
+# 설치:
+#   sudo cp deploy/sat-simulation-api.service /etc/systemd/system/
+#   sudo sed -i "s#/opt/sat_footprint#$(pwd)#" /etc/systemd/system/sat-simulation-api.service
+#   sudo sed -i "s#__USER__#$(whoami)#" /etc/systemd/system/sat-simulation-api.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now sat-simulation-api
+#
+# 상태 확인: sudo systemctl status sat-simulation-api / journalctl -u sat-simulation-api -f
+
+[Unit]
+Description=sat_simulation_api (satellite HK telemetry / footprint API)
+After=network.target
+
+[Service]
+Type=simple
+User=__USER__
+WorkingDirectory=/opt/sat_footprint
+EnvironmentFile=/opt/sat_footprint/.env
+ExecStart=/opt/sat_footprint/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

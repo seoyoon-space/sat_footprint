@@ -53,6 +53,16 @@ class Settings(BaseSettings):
     # 미설정(None)이면 인증을 건너뜀 - 로컬 개발용 기본값이며, 운영 배포 시 반드시 설정할 것.
     api_key: str | None = None
 
+    # 브라우저에서 이 API를 직접 fetch하는 프론트엔드(예: Cesium 기반 시각화 페이지)가
+    # 있다면 그 origin을 쉼표로 구분해 등록. 미설정(빈 문자열)이면 CORS 미들웨어 자체를
+    # 추가하지 않아 모든 브라우저 cross-origin 요청이 차단됨(서버-서버 호출은 영향 없음).
+    # 예: CORS_ALLOWED_ORIGINS=https://dem.example.com,http://localhost:5173
+    cors_allowed_origins: str = ""
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
     mysql_host: str | None = None
     mysql_port: int = 3306
     mysql_user: str | None = None

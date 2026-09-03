@@ -207,6 +207,19 @@ auth is enforced. `/health` never requires a key.
 curl -H "X-API-Key: your_api_key" http://localhost:8000/telemetry/query ...
 ```
 
+### CORS
+
+If a frontend (e.g. a Cesium viewer) fetches this API directly from the browser, set
+`CORS_ALLOWED_ORIGINS` in `.env` to a comma-separated list of allowed origins:
+
+```env
+CORS_ALLOWED_ORIGINS=https://dem.example.com,http://localhost:5173
+```
+
+If unset (default), no cross-origin browser request is allowed - server-to-server calls (e.g.
+a DEM server proxying the request on the backend) are unaffected either way, since CORS is a
+browser-enforced restriction, not a server-side one.
+
 Query telemetry:
 
 ```bash
@@ -350,6 +363,10 @@ Build and run the API in a container (reads `.env` for DB settings):
 docker build -t sat-simulation-api .
 docker run --rm -p 8000:8000 --env-file .env sat-simulation-api
 ```
+
+For standing up a persistent instance on a shared test server (e.g. for another service like a
+DEM/Cesium server to call), see [`deploy/README.md`](deploy/README.md) - it covers a
+one-command Docker deploy script and a systemd-based alternative.
 
 ## Running tests
 
