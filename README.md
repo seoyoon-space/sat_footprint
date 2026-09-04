@@ -266,9 +266,13 @@ FastAPI auto-generates these from the code - no separate spec to maintain:
 | `POST /footprint/track/czml` | Same, as CZML scoped by `availability` so Cesium transitions it over time | `satellite_id` + time range (real DB) |
 | `POST /footprint/compute` | One footprint polygon (GeoJSON) for a manually given position/attitude | manual position + quaternion |
 | `POST /footprint/czml` | Same, as a single CZML packet | manual position + quaternion |
+| `POST /footprint/line/track` | Left/right ground points of the push-broom sensor's current scan line, per HK sample | `satellite_id` + time range (real DB) |
+| `POST /footprint/line/track/geojson` | Same, as a GeoJSON `LineString` per sample | `satellite_id` + time range (real DB) |
+| `POST /footprint/line/track/czml` | Same, as a CZML `polyline` scoped by `availability` | `satellite_id` + time range (real DB) |
 | `POST /propagation/track` | SGP4-predicted TEME(~=ECI) position/velocity per timestamp | TLE + time range (no DB) |
 | `POST /propagation/track/czml` | Same, as a Cesium CZML position-only track | TLE + time range (no DB) |
 | `POST /validator/ops-status` | Settling-time / wheel-saturation PASS/WARN/FAIL | `satellite_id` + time range (real DB) |
+| `POST /mission/schedule` | Mission schedule rows + real camera ON/OFF window (`scanStart`/`camStart`/`camEnd`) | `satellite_id` + time range (separate MCE DB) |
 | `GET /health` | Liveness check, no auth | - |
 
 ### Authentication
@@ -401,6 +405,39 @@ curl -X POST "http://localhost:8000/footprint/track/czml" \
   }'
 ```
 
+### Push-broom line footprint (current scan line)
+
+`/footprint/track` treats the camera as a frame sensor - a full FOV rectangle projected at
+each instant. A real push-broom sensor instead scans one across-track *line* at a time as the
+satellite moves, and the ground track is built up from many such lines. `POST
+/footprint/line/track` (and its `/geojson` and `/czml` variants) model that: given
+`fov_across_deg` (the sensor's across-track FOV - along-track width is treated as zero, same as
+the DEM server's own `SensorConfig`, which likewise only carries a single FOV angle), it returns
+the left/right ground points of the line currently being scanned, per HK telemetry sample:
+
+```bash
+curl -X POST "http://localhost:8000/footprint/line/track/czml" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T00:10:00Z",
+    "fov_across_deg": 1.6,
+    "boresight_x": -1, "boresight_y": 0, "boresight_z": 0
+  }'
+```
+
+This is the piece needed to draw "where the sensor plane's current line is" inside the
+rectangular-pyramid FOV visualization (`cesium-viewer.js`'s `cornerDirsBody`/`_createFovFootprint`
+on the DEM server side already renders that pyramid from the same corner-ray geometry as
+`/footprint/rays` - this adds the line that sweeps inside it).
+
+Sample spacing follows the raw HK telemetry cadence (~1 Hz), not the camera's real `line_rate`
+(hundreds to thousands of Hz) - matching that would need attitude/position interpolation between
+HK samples, which is a materially bigger feature this project doesn't implement; the DEM server's
+own Orekit/Rugged pipeline is the source of truth for line-accurate push-broom simulation. This
+endpoint is for showing *where* the active line roughly is, at telemetry resolution.
+
 ### Orbit propagation (TLE / SGP4, no DB)
 
 Independent of real telemetry - given a TLE, propagates the orbit over a time range via the
@@ -442,6 +479,31 @@ curl -X POST "http://localhost:8000/validator/ops-status" \
 
 `settling_tolerance_deg`/`wheel_max_rpm` are each optional; omit one to skip that evaluation.
 Returns overall `PASS`/`WARN`/`FAIL` plus per-check detail (see `core/validator/ops_rules.py`).
+
+### Mission schedule (real camera ON/OFF window, separate MCE DB)
+
+Everything above reads the HK telemetry DB (`MYSQL_*`/`satellites.toml`). This endpoint reads a
+**completely different database** - the MCE (mission scheduling) server's own DB, which holds
+`TB_Selected_Mission_Schedule`: when a satellite was actually scheduled/commanded to shoot, and
+(via `core/mission/mce_db.py::compute_camera_window`) the real camera ON~OFF window computed from
+the mission's `MissionParameterJson` (`scanStart`/`camStart`/`camEnd`) - much narrower than the
+schedule's `eventStart`~`eventEnd`, which is the whole pass/scheduling window, not the actual
+shutter-open interval. Requires `MCE_DB_*` in `.env` (see `.env.example`); unrelated to
+`MYSQL_*`/`satellites.toml`.
+
+```bash
+curl -X POST "http://localhost:8000/mission/schedule" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-04-01T00:00:00Z",
+    "end_time": "2026-04-30T23:59:59Z"
+  }'
+```
+
+Returns the mission rows for that satellite/window (`EventStart` in range), each including
+`scanStart`/`camStart`/`camEnd` (`null` if the mission has no `MissionParameterJson`, e.g. older
+or ground-station entries - see `core/mission/mce_db.py`).
 
 ## Notes / real DB validation
 

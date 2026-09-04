@@ -71,6 +71,14 @@ class Settings(BaseSettings):
     mysql_schema: str | None = None
     mysql_connection_url: str | None = None
 
+    # MCE(미션 스케줄링) 서버 DB - HK DB(nstanl)와는 별개의 DB. core/mission/mce_db.py가
+    # 미션의 실제 카메라 ON/OFF 구간(scanStart/camStart/camEnd)을 계산하는 데 사용.
+    mce_db_host: str | None = None
+    mce_db_port: int = 3306
+    mce_db_user: str | None = None
+    mce_db_password: str | None = None
+    mce_db_name: str | None = None
+
 
 settings = Settings()
 
@@ -163,3 +171,34 @@ class SatelliteRegistry:
 
 
 satellite_registry = SatelliteRegistry()
+
+
+@dataclass(frozen=True)
+class MceDbConfig:
+    db_host: str
+    db_port: int
+    db_user: str
+    db_password: str
+    db_name: str
+
+
+def get_mce_db_config() -> MceDbConfig:
+    """MCE_DB_* 환경변수로부터 MCE(미션 스케줄링) DB 접속 설정을 만든다.
+
+    HK DB(MYSQL_*)와는 완전히 별개의 DB/서버다 - core/mission/mce_db.py가 미션의 실제
+    카메라 ON/OFF 구간을 계산하려면 이 DB의 TB_Selected_Mission_Schedule 테이블을
+    읽어야 하는데, 그 접속정보는 HK DB 접속정보로 대신할 수 없다.
+    """
+    host = settings.mce_db_host or _env_first("MCE_DB_HOST")
+    user = settings.mce_db_user or _env_first("MCE_DB_USER")
+    password = settings.mce_db_password if settings.mce_db_password is not None else _env_first("MCE_DB_PASSWORD")
+    db_name = settings.mce_db_name or _env_first("MCE_DB_NAME")
+    port = settings.mce_db_port or int(_env_first("MCE_DB_PORT") or 3306)
+
+    if not host or not user or not db_name:
+        raise ValueError(
+            "MCE DB env is incomplete. Set MCE_DB_HOST, MCE_DB_USER, MCE_DB_NAME "
+            "(and MCE_DB_PASSWORD, MCE_DB_PORT if needed) in .env."
+        )
+
+    return MceDbConfig(db_host=host, db_port=port, db_user=user, db_password=password or "", db_name=db_name)

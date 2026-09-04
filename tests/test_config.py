@@ -12,10 +12,12 @@ from __future__ import annotations
 import pytest
 
 from config import (
+    MceDbConfig,
     SatelliteDBConfig,
     SatelliteRegistry,
     _load_satellite_configs,
     build_mysql_connection_url,
+    get_mce_db_config,
 )
 
 VALID_TOML = """
@@ -130,3 +132,31 @@ def test_build_mysql_connection_url_raises_when_incomplete(monkeypatch):
 
     with pytest.raises(ValueError):
         build_mysql_connection_url()
+
+
+def test_get_mce_db_config_raises_when_incomplete(monkeypatch):
+    import config as config_module
+
+    for field in ("mce_db_host", "mce_db_user", "mce_db_password", "mce_db_name"):
+        monkeypatch.setattr(config_module.settings, field, None)
+    for env_var in ("MCE_DB_HOST", "MCE_DB_USER", "MCE_DB_PASSWORD", "MCE_DB_NAME"):
+        monkeypatch.delenv(env_var, raising=False)
+
+    with pytest.raises(ValueError, match="MCE DB env is incomplete"):
+        get_mce_db_config()
+
+
+def test_get_mce_db_config_builds_config_from_settings(monkeypatch):
+    import config as config_module
+
+    monkeypatch.setattr(config_module.settings, "mce_db_host", "10.0.0.5")
+    monkeypatch.setattr(config_module.settings, "mce_db_port", 3306)
+    monkeypatch.setattr(config_module.settings, "mce_db_user", "mce_user")
+    monkeypatch.setattr(config_module.settings, "mce_db_password", "mce_pass")
+    monkeypatch.setattr(config_module.settings, "mce_db_name", "o1b_mce_server")
+
+    cfg = get_mce_db_config()
+
+    assert cfg == MceDbConfig(
+        db_host="10.0.0.5", db_port=3306, db_user="mce_user", db_password="mce_pass", db_name="o1b_mce_server"
+    )

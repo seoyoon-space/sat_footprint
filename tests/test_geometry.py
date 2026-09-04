@@ -18,6 +18,9 @@ from core.geometry.footprint import (
     footprint_to_geojson,
     footprint_track_to_czml,
     intersect_wgs84_ellipsoid,
+    line_ground_points,
+    line_to_geojson,
+    line_track_to_czml,
 )
 
 
@@ -279,3 +282,88 @@ def test_footprint_track_to_czml_skips_not_visible_samples():
     ids = [p["id"] for p in czml]
     assert "footprint_polygon_0" in ids and "footprint_center_0" in ids
     assert "footprint_polygon_1" not in ids and "footprint_center_1" not in ids
+
+
+def test_line_ground_points_matches_footprint_corners_with_zero_along_track_fov():
+    """fov_y_deg=0인 compute_footprint의 특수 케이스 재사용이므로, 4개 코너 중
+    corners[0]/corners[1]이 line_ground_points의 left/right와 정확히 일치해야 한다."""
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+    boresight_body = (-1.0, 0.0, 0.0)
+
+    footprint = compute_footprint(sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=0.0, boresight_body=boresight_body)
+    line = line_ground_points(sat_pos_eci, identity_q, dt, fov_across_deg=5.0, boresight_body=boresight_body)
+
+    assert line["visible"] is True
+    assert line["left"] == pytest.approx(footprint["corners"][0])
+    assert line["right"] == pytest.approx(footprint["corners"][1])
+    # along-track 폭이 0이므로 반대편 코너쌍과도 겹쳐야 한다.
+    assert footprint["corners"][0] == pytest.approx(footprint["corners"][3])
+    assert footprint["corners"][1] == pytest.approx(footprint["corners"][2])
+    # 실제로 폭 방향으로 떨어진 서로 다른 두 지상점이어야 한다(광선을 잘못 짜서 겹치는 버그 방지).
+    assert line["left"] != pytest.approx(line["right"])
+
+
+def test_line_ground_points_looking_away_from_earth_is_not_visible():
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+    line = line_ground_points(sat_pos_eci, identity_q, dt, fov_across_deg=5.0, boresight_body=(1.0, 0.0, 0.0))
+
+    assert line["visible"] is False
+    assert line["left"] is None
+    assert line["right"] is None
+
+
+def test_line_to_geojson_produces_linestring_and_endpoint_points():
+    line = {"left": (9.0, 20.0), "right": (11.0, 20.0), "visible": True}
+    geojson = line_to_geojson(line, properties={"time": "2026-08-20T00:00:00Z"})
+
+    assert geojson["type"] == "FeatureCollection"
+    linestring = next(f for f in geojson["features"] if f["geometry"]["type"] == "LineString")
+    assert linestring["geometry"]["coordinates"] == [[9.0, 20.0], [11.0, 20.0]]
+    assert linestring["properties"]["time"] == "2026-08-20T00:00:00Z"
+
+    roles = {f["properties"]["role"] for f in geojson["features"] if f["geometry"]["type"] == "Point"}
+    assert roles == {"left", "right"}
+
+
+def test_line_to_geojson_not_visible_has_no_features():
+    line = {"left": None, "right": None, "visible": False}
+    geojson = line_to_geojson(line)
+    assert geojson == {"type": "FeatureCollection", "features": []}
+
+
+def test_line_track_to_czml_scopes_each_sample_with_availability():
+    line1 = {"left": (9.0, 20.0), "right": (11.0, 20.0), "visible": True}
+    line2 = {"left": (10.0, 20.0), "right": (12.0, 20.0), "visible": True}
+    samples = [
+        (datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc), line1),
+        (datetime(2026, 8, 20, 0, 0, 10, tzinfo=timezone.utc), line2),
+    ]
+
+    czml = line_track_to_czml(samples, id_prefix="ln")
+
+    assert czml[0] == {"id": "document", "version": "1.0"}
+    assert len(czml) == 3  # document + 샘플 2개
+
+    packet_0 = next(p for p in czml if p["id"] == "ln_0")
+    assert packet_0["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:10Z"
+    assert packet_0["polyline"]["positions"]["cartographicDegrees"] == [9.0, 20.0, 0.0, 11.0, 20.0, 0.0]
+
+
+def test_line_track_to_czml_skips_not_visible_samples():
+    visible_line = {"left": (9.0, 20.0), "right": (11.0, 20.0), "visible": True}
+    hidden_line = {"left": None, "right": None, "visible": False}
+    samples = [
+        (datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc), visible_line),
+        (datetime(2026, 8, 20, 0, 0, 10, tzinfo=timezone.utc), hidden_line),
+    ]
+
+    czml = line_track_to_czml(samples, id_prefix="ln")
+
+    ids = [p["id"] for p in czml]
+    assert "ln_0" in ids
+    assert "ln_1" not in ids

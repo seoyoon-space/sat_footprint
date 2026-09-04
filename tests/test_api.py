@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 import api.czml_routes as czml_routes
 import api.footprint_routes as footprint_routes
+import api.mission_routes as mission_routes
 import api.routes as routes
 import api.validator_routes as validator_routes
 import config as config_module
@@ -240,6 +241,73 @@ def test_footprint_track_czml_scopes_each_sample_by_availability(fake_loader):
     assert polygon_ids == ["footprint_polygon_0", "footprint_polygon_1", "footprint_polygon_2"]
     first_polygon = next(p for p in packets if p["id"] == "footprint_polygon_0")
     assert first_polygon["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:01Z"
+
+
+def test_line_track_returns_left_right_ground_points_per_sample(fake_loader):
+    """푸시브룸 라인(along-track 폭 0)의 좌/우 지상점이 HK 샘플 개수만큼 나오는지 확인."""
+    resp = client.post(
+        "/footprint/line/track",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_across_deg": 1.6,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["satellite_id"] == "O1A"
+    assert body["num_records"] == 3
+    for sample in body["samples"]:
+        assert sample["visible"] is True
+        assert sample["left"] is not None and sample["right"] is not None
+        assert sample["left"] != sample["right"]
+
+
+def test_line_track_geojson_returns_linestring_per_sample(fake_loader):
+    resp = client.post(
+        "/footprint/line/track/geojson",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_across_deg": 1.6,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["type"] == "FeatureCollection"
+    linestrings = [f for f in body["features"] if f["geometry"]["type"] == "LineString"]
+    assert len(linestrings) == 3
+    assert linestrings[0]["properties"]["time"] == "2026-08-20T00:00:00Z"
+
+
+def test_line_track_czml_scopes_each_sample_by_availability(fake_loader):
+    resp = client.post(
+        "/footprint/line/track/czml",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "fov_across_deg": 1.6,
+            "boresight_x": -1.0,
+            "boresight_y": 0.0,
+            "boresight_z": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    packets = resp.json()
+    assert packets[0] == {"id": "document", "version": "1.0"}
+    line_ids = [p["id"] for p in packets if "polyline" in p]
+    assert line_ids == ["line_0", "line_1", "line_2"]
+    first = next(p for p in packets if p["id"] == "line_0")
+    assert first["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:01Z"
 
 
 # Vallado의 SGP4 검증 표준 예제(satellite 88888) - tests/test_propagation.py와 동일 TLE
@@ -477,3 +545,59 @@ def test_routers_share_a_single_loader_cache_per_satellite():
     assert routes._get_loader is czml_routes._get_loader
     assert routes._get_loader is validator_routes._get_loader
     assert routes._get_loader is footprint_routes._get_loader
+
+
+def test_mission_schedule_returns_missions_with_camera_window(monkeypatch):
+    """/mission/schedule은 core/mission/mce_db.py::get_missions()를 그대로 호출해
+    JSON으로 감싸 반환한다 - HK DB와 무관한 별개 DB이므로 fake_loader가 아니라
+    get_missions 자체를 monkeypatch한다."""
+
+    def _fake_get_missions(satellite_id, start_iso, end_iso):
+        assert satellite_id == "O1A"
+        return [
+            {
+                "id": 1,
+                "scheduleId": "O1A_13419_GGD",
+                "satelliteId": "O1A",
+                "eventStart": "2026-04-10T03:01:54.375Z",
+                "eventEnd": "2026-04-10T03:01:57.250Z",
+                "scanStart": "2026-04-10T03:01:54.375Z",
+                "camStart": "2026-04-10T03:01:54.375Z",
+                "camEnd": "2026-04-10T03:02:04.775Z",
+            }
+        ]
+
+    monkeypatch.setattr(mission_routes, "get_missions", _fake_get_missions)
+
+    resp = client.post(
+        "/mission/schedule",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-04-01T00:00:00Z",
+            "end_time": "2026-04-30T23:59:59Z",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["satellite_id"] == "O1A"
+    assert body["num_records"] == 1
+    assert body["missions"][0]["scheduleId"] == "O1A_13419_GGD"
+    assert body["missions"][0]["camStart"] == "2026-04-10T03:01:54.375Z"
+
+
+def test_mission_schedule_surfaces_db_config_error_as_500(monkeypatch):
+    def _raise_config_error(satellite_id, start_iso, end_iso):
+        raise ValueError("MCE DB env is incomplete.")
+
+    monkeypatch.setattr(mission_routes, "get_missions", _raise_config_error)
+
+    resp = client.post(
+        "/mission/schedule",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-04-01T00:00:00Z",
+            "end_time": "2026-04-30T23:59:59Z",
+        },
+    )
+    assert resp.status_code == 500
+    assert "MCE DB env is incomplete" in resp.json()["detail"]
