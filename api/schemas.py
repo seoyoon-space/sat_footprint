@@ -99,6 +99,27 @@ class CameraRayTrackResponse(BaseModel):
     samples: list[CameraRaySample]
 
 
+class PropagationTrackRequest(BaseModel):
+    """TLE 기반 SGP4 궤도 전파 요청. DB 조회 없이(실측 텔레메트리와 무관) 순수 예측값을 낸다."""
+
+    tle_line1: str = Field(..., description="TLE 1번째 줄 ('1 '로 시작)")
+    tle_line2: str = Field(..., description="TLE 2번째 줄 ('2 '로 시작)")
+    start_time: datetime = Field(..., description="전파 시작 시각 (UTC)")
+    end_time: datetime = Field(..., description="전파 종료 시각 (UTC)")
+    step_sec: float = Field(60.0, gt=0, description="전파 간격 [초]")
+
+
+class PropagationSample(BaseModel):
+    time: datetime
+    position_km: tuple[float, float, float] = Field(..., description="TEME(~=ECI) 위치 [km]")
+    velocity_km_s: tuple[float, float, float] = Field(..., description="TEME(~=ECI) 속도 [km/s]")
+
+
+class PropagationTrackResponse(BaseModel):
+    num_records: int
+    samples: list[PropagationSample]
+
+
 class SettlingResultSchema(BaseModel):
     settled: bool
     settling_time: float | None

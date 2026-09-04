@@ -242,6 +242,92 @@ def test_footprint_track_czml_scopes_each_sample_by_availability(fake_loader):
     assert first_polygon["availability"] == "2026-08-20T00:00:00Z/2026-08-20T00:00:01Z"
 
 
+# Vallado의 SGP4 검증 표준 예제(satellite 88888) - tests/test_propagation.py와 동일 TLE
+PROP_LINE1 = "1 88888U          80275.98708465  .00073094  13844-3  66816-4 0    87"
+PROP_LINE2 = "2 88888  72.8435 115.9689 0086731  52.6988 110.5714 16.05824518  1058"
+PROP_EPOCH = "1980-10-01T23:41:24.113760Z"
+
+
+def test_propagation_track_returns_sgp4_position_velocity_samples():
+    resp = client.post(
+        "/propagation/track",
+        json={
+            "tle_line1": PROP_LINE1,
+            "tle_line2": PROP_LINE2,
+            "start_time": PROP_EPOCH,
+            "end_time": "1980-10-01T23:51:24.113760Z",
+            "step_sec": 300,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["num_records"] == 3
+    first = body["samples"][0]
+    assert first["time"] == PROP_EPOCH
+    assert len(first["position_km"]) == 3 and len(first["velocity_km_s"]) == 3
+    # 궤도반경이 물리적으로 타당한 범위인지(이심률 작은 궤도, 반장축 ~6638km 근방)
+    r = sum(c**2 for c in first["position_km"]) ** 0.5
+    assert 6500 < r < 6800
+
+
+def test_propagation_track_czml_has_position_only_no_orientation():
+    resp = client.post(
+        "/propagation/track/czml",
+        json={
+            "tle_line1": PROP_LINE1,
+            "tle_line2": PROP_LINE2,
+            "start_time": PROP_EPOCH,
+            "end_time": "1980-10-01T23:46:24.113760Z",
+            "step_sec": 300,
+        },
+    )
+    assert resp.status_code == 200
+    packets = resp.json()
+    assert packets[0] == {"id": "document", "version": "1.0"}
+    assert "position" in packets[1]
+    assert "orientation" not in packets[1]
+
+
+def test_propagation_track_rejects_invalid_tle():
+    resp = client.post(
+        "/propagation/track",
+        json={
+            "tle_line1": "not a valid tle line",
+            "tle_line2": PROP_LINE2,
+            "start_time": PROP_EPOCH,
+            "end_time": "1980-10-01T23:51:24.113760Z",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_propagation_track_rejects_end_before_start():
+    resp = client.post(
+        "/propagation/track",
+        json={
+            "tle_line1": PROP_LINE1,
+            "tle_line2": PROP_LINE2,
+            "start_time": PROP_EPOCH,
+            "end_time": "1980-10-01T23:00:00.000000Z",
+        },
+    )
+    assert resp.status_code == 400
+
+
+def test_propagation_track_rejects_excessive_sample_count():
+    resp = client.post(
+        "/propagation/track",
+        json={
+            "tle_line1": PROP_LINE1,
+            "tle_line2": PROP_LINE2,
+            "start_time": PROP_EPOCH,
+            "end_time": "1980-10-02T23:41:24.113760Z",  # 24시간
+            "step_sec": 1,  # 1초 간격 -> 86400개, 한도 초과
+        },
+    )
+    assert resp.status_code == 400
+
+
 def test_ops_status_evaluates_settling_and_saturation(fake_loader):
     resp = client.post(
         "/validator/ops-status",
