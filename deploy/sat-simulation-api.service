@@ -8,6 +8,9 @@
 #   sudo systemctl enable --now sat-simulation-api
 #
 # 상태 확인: sudo systemctl status sat-simulation-api / journalctl -u sat-simulation-api -f
+#
+# 127.0.0.1:8081에만 바인딩 - 192.168.0.82:8080(EP 서버가 이미 쓰는 팀 공용 진입점) 앞단의
+# 리버스 프록시가 /sat-api/ 같은 경로를 이 포트로 넘겨주는 구조. deploy/README.md 참고.
 
 [Unit]
 Description=sat_simulation_api (satellite HK telemetry / footprint API)
@@ -18,7 +21,7 @@ Type=simple
 User=__USER__
 WorkingDirectory=/opt/sat_footprint
 EnvironmentFile=/opt/sat_footprint/.env
-ExecStart=/opt/sat_footprint/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8081
+ExecStart=/opt/sat_footprint/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8081
 Restart=on-failure
 RestartSec=5
 

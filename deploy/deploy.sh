@@ -9,8 +9,11 @@
 # .env / config/satellites.toml에 실제 값이 안 채워져 있으면 실행을 멈추고 안내만 하고 끝난다
 # (여기 스크립트가 비밀번호 등을 대신 채워 넣지 않는다 - 직접 채워야 함).
 #
-# 기본 포트가 8081인 이유: 192.168.0.82는 이미 EP(Event Planner) 서버가 8080을 쓰고 있는
-# 팀 개발 서버라(docs 참고), sat_simulation_api는 그 뒤에 다른 포트를 잡아 띄운다.
+# 192.168.0.82:8080은 이미 EP(Event Planner) 서버가 쓰고 있는 팀 공용 진입점이라(docs 참고),
+# 이 컨테이너는 8080과 부딪히지 않도록 127.0.0.1:8081(로컬호스트에만 바인딩, 외부에서 직접
+# 접속 불가)로 띄운다. 외부/DEM 서버는 http://192.168.0.82:8080/sat-api/... 로 접속하고,
+# 8080 앞단 리버스 프록시가 그 경로를 127.0.0.1:8081로 넘겨주는 구조 - deploy/README.md
+# "리버스 프록시 설정" 절 참고.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -44,14 +47,15 @@ docker build -t "$IMAGE_NAME" .
 echo "== 3) 기존 컨테이너 정리 =="
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 
-echo "== 4) 컨테이너 기동 (host:$HOST_PORT -> container:8000) =="
+echo "== 4) 컨테이너 기동 (127.0.0.1:$HOST_PORT -> container:8000, 외부에는 직접 노출 안 함) =="
 docker run -d --restart unless-stopped \
-  -p "${HOST_PORT}:8000" \
+  -p "127.0.0.1:${HOST_PORT}:8000" \
   --env-file .env \
   -v "$(pwd)/config/satellites.toml:/app/config/satellites.toml:ro" \
   --name "$CONTAINER_NAME" \
   "$IMAGE_NAME"
 
-echo "== 5) 헬스체크 =="
+echo "== 5) 헬스체크 (로컬에서만 확인 가능 - 외부 접속은 리버스 프록시 설정 후) =="
 sleep 2
-curl -sf "http://localhost:${HOST_PORT}/health" && echo "" && echo "OK: http://$(hostname -I 2>/dev/null | awk '{print $1}'):${HOST_PORT}"
+curl -sf "http://127.0.0.1:${HOST_PORT}/health" && echo "" && echo "OK (local): http://127.0.0.1:${HOST_PORT}"
+echo "외부/DEM 서버 접속용 리버스 프록시 설정은 deploy/README.md 참고."
