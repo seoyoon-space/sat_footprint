@@ -12,11 +12,22 @@ from core.geometry.footprint import (
     footprint_to_czml,
     footprint_to_geojson,
     footprint_track_to_czml,
+    line_ground_points,
+    line_to_geojson,
+    line_track_to_czml,
 )
 
 from .auth import require_api_key
 from .loader_cache import get_loader as _get_loader
-from .schemas import CameraRaySample, CameraRayTrackRequest, CameraRayTrackResponse, FootprintRequest
+from .schemas import (
+    CameraRaySample,
+    CameraRayTrackRequest,
+    CameraRayTrackResponse,
+    FootprintRequest,
+    LineGroundPoint,
+    LineTrackRequest,
+    LineTrackResponse,
+)
 
 router = APIRouter(prefix="/footprint", tags=["footprint"], dependencies=[Depends(require_api_key)])
 
@@ -36,10 +47,11 @@ def _compute_footprint_from_request(req: FootprintRequest) -> dict:
 
 
 def _load_real_telemetry_samples(
-    req: CameraRayTrackRequest,
+    req: CameraRayTrackRequest | LineTrackRequest,
 ) -> list[tuple[datetime, tuple[float, float, float], tuple[float, float, float, float]]]:
     """satellite_id+기간의 실측 위치/자세 텔레메트리를 로드해 (시각, 위치, 쿼터니언)
-    샘플 리스트로 정리. /footprint/rays·track·track/czml이 공유하는 공통 로딩 로직.
+    샘플 리스트로 정리. /footprint/rays·track·track/czml·line/*이 공유하는 공통 로딩 로직
+    (satellite_id/start_time/end_time/merge_tolerance_sec 필드만 있으면 됨).
     """
     try:
         loader = _get_loader(req.satellite_id)
@@ -177,3 +189,56 @@ def footprint_track_czml_endpoint(req: CameraRayTrackRequest) -> list:
     구성되어, Cesium 타임라인을 재생하면 촬영영역이 시간에 따라 전환된다.
     """
     return footprint_track_to_czml(_compute_footprint_track(req), id_prefix="footprint")
+
+
+def _compute_line_track(req: LineTrackRequest) -> list[tuple[datetime, dict]]:
+    boresight_body = (req.boresight_x, req.boresight_y, req.boresight_z)
+    return [
+        (
+            ts_dt,
+            line_ground_points(
+                sat_pos_eci=pos,
+                quaternion_body2eci=quat,
+                utc_datetime=ts_dt,
+                fov_across_deg=req.fov_across_deg,
+                boresight_body=boresight_body,
+            ),
+        )
+        for ts_dt, pos, quat in _load_real_telemetry_samples(req)
+    ]
+
+
+@router.post("/line/track", response_model=LineTrackResponse)
+def line_track_endpoint(req: LineTrackRequest) -> LineTrackResponse:
+    """지정 위성/기간의 실측 자세로부터, 푸시브룸 센서가 각 시점에 스캔 중인 '한 줄'의
+    좌/우 지상점(WGS-84 타원체 근사)을 시간별로 반환.
+
+    /footprint/track(전체 FOV 사각형 스냅샷)과 달리 along-track 폭을 0으로 취급해,
+    Cesium 뷰어에서 사각뿔 FOV 안에 "지금 스캔 중인 라인" 위치를 표시하는 용도로 쓴다.
+    시점 간격은 HK 텔레메트리 원본 샘플 주기(~1Hz) 그대로다 - 실제 카메라 line_rate
+    수준의 보간은 하지 않는다(LineTrackRequest 참고).
+    """
+    samples: list[LineGroundPoint] = []
+    for ts_dt, line in _compute_line_track(req):
+        samples.append(
+            LineGroundPoint(time=ts_dt, left=line["left"], right=line["right"], visible=line["visible"])
+        )
+    return LineTrackResponse(satellite_id=req.satellite_id, num_records=len(samples), samples=samples)
+
+
+@router.post("/line/track/geojson")
+def line_track_geojson_endpoint(req: LineTrackRequest) -> dict:
+    """같은 라인 트랙을 GeoJSON FeatureCollection(LineString + 좌/우 Point)으로 반환."""
+    features: list[dict] = []
+    for ts_dt, line in _compute_line_track(req):
+        iso = ts_dt.isoformat().replace("+00:00", "Z") if ts_dt.tzinfo else ts_dt.isoformat() + "Z"
+        geojson = line_to_geojson(line, properties={"time": iso, "visible": line["visible"]})
+        features.extend(geojson["features"])
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+@router.post("/line/track/czml")
+def line_track_czml_endpoint(req: LineTrackRequest) -> list:
+    """같은 라인 트랙을 CZML polyline 시퀀스로 반환(availability로 시점 전환)."""
+    return line_track_to_czml(_compute_line_track(req), id_prefix="line")
