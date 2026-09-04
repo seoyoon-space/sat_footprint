@@ -15,7 +15,8 @@ router = APIRouter(prefix="/telemetry", tags=["telemetry"], dependencies=[Depend
 def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
     """
     지정한 위성/기간의 HK 텔레메트리를 공통 타임스탬프 기준으로 병합 후 반환.
-    위성별로 DB 인스턴스가 다르므로 config/satellites.toml에 등록된 satellite_id만 사용 가능.
+    config/satellites.toml에 등록된 satellite_id만 사용 가능(O1A/O1B는 같은 DB를
+    공유하지만 hk1~hk6 테이블 접두어가 satellite_id에 따라 달라짐).
     """
     try:
         loader = _get_loader(req.satellite_id)
@@ -31,7 +32,9 @@ def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
             # 경우 - datetime|str 유니온에서 흔히 벌어짐 - AttributeError로 항상 실패했음)
             start_time=req.start_time,
             end_time=req.end_time,
-            satellite_id=None,  # DB 자체가 위성별로 분리되어 있어 컬럼 필터 불필요
+            # satellite_id는 위성별 hk1~hk6 테이블 선택에 쓰인다(tbl_obs1a_hk*/tbl_obs1b_hk*) -
+            # None으로 넘기면 항상 O1A 테이블을 조회해버리므로 반드시 실제 값을 전달해야 한다.
+            satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
         )

@@ -6,8 +6,9 @@ HK telemetry loader and API for querying spacecraft housekeeping (HK) packets fr
 
 This project loads housekeeping data from the real DB layout used in the target system:
 
-- Schema: `nstanl`
-- Tables: `tbl_obs1a_hk1`, `tbl_obs1a_hk2`, ..., `tbl_obs1a_hk6`
+- Schema: `nstanl` (shared by O1A and O1B - they are **not** separate DB instances)
+- Tables: `tbl_obs1a_hk1..hk6` for O1A, `tbl_obs1b_hk1..hk6` for O1B - table prefix only,
+  selected by the `satellite_id` argument (see [Schema map](#schema-map))
 - Time column: `timeUtc`
 - Time unit: Unix epoch seconds (UTC)
 
@@ -79,16 +80,22 @@ Important:
 
 ## Schema map
 
-The canonical mapping used by the loader is:
+`core/loader/schema_map.py::get_hk_packet_schema(satellite_id)` picks the table prefix from
+`satellite_id`:
 
-- `hk1` -> `nstanl.tbl_obs1a_hk1`
-- `hk2` -> `nstanl.tbl_obs1a_hk2`
-- `hk3` -> `nstanl.tbl_obs1a_hk3`
-- `hk4` -> `nstanl.tbl_obs1a_hk4`
-- `hk5` -> `nstanl.tbl_obs1a_hk5`
-- `hk6` -> `nstanl.tbl_obs1a_hk6`
+- `satellite_id="O1A"` (or `None`, the default) -> `nstanl.tbl_obs1a_hk1..hk6`
+- `satellite_id="O1B"` -> `nstanl.tbl_obs1b_hk1..hk6`
 
-The master packet is `hk1`.
+**`satellite_id` must be passed through to `HKLoader.load(..., satellite_id=...)` itself**, not
+just to `HKLoader.for_satellite(...)`/the connection constructor - the latter only picks DB
+*connection* info (currently identical for O1A/O1B, since they share one DB), while
+`load()`'s own `satellite_id` argument is what selects the *table prefix*. Passing it to one but
+not the other silently queries O1A's tables regardless of which satellite was asked for - this
+was a real bug in this project earlier and is easy to reintroduce when copying the loader
+elsewhere, so double-check both call sites agree.
+
+The master packet is `hk1`. Column names (canonical, e.g. `qbody_wrt_eci1..4`) are identical
+between O1A and O1B - only the table prefix differs.
 
 Time semantics:
 
@@ -96,6 +103,11 @@ Time semantics:
 - Unit: Unix epoch seconds (UTC)
 - User-facing input: KST or UTC strings are accepted and internally normalized
 - Output DataFrame: standard `time` column in UTC-aware pandas timestamps
+
+Quaternion semantics: `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) in the raw DB, but
+`HKLoader._fetch_packet()` reorders it to this project's scalar-first (w,x,y,z) convention
+before returning - so the DataFrame values are always scalar-first even though the column names
+don't change.
 
 ## Python usage
 
@@ -136,12 +148,34 @@ print(df.head())
 ```python
 from core.loader import HKLoader
 
-loader = HKLoader.for_satellite("O1A")
+loader = HKLoader.for_satellite("O1B")
 df = loader.load(
     start_time="2026-08-20",
     end_time="2026-08-21",
+    satellite_id="O1B",  # required here too - see the warning in "Schema map" above
 )
 ```
+
+### Embedding `core/` directly in another project (no HTTP, no `config.py` required)
+
+`core/loader/hk_loader.py`, `schema_map.py`, and `time_sync.py` have no dependency on `api/` or
+FastAPI, and `HKLoader(connection_url=...)` doesn't need `config.py` on the path at all - only
+the `from_env()`/`for_satellite()` classmethods lazily import it, so a caller that already has
+its own connection string (or its own settings module) can drop just those three files into
+another codebase and use them standalone, e.g.:
+
+```python
+from core.loader import HKLoader
+
+loader = HKLoader("mysql+pymysql://user:pass@host:3306/nstanl")
+df = loader.load(start_time="2026-08-20", end_time="2026-08-21", satellite_id="O1B")
+```
+
+The rest of `core/` (`coordinates.py`, `geometry/footprint.py`, `math_utils/quat.py`,
+`propagation.py`, `validator/ops_rules.py`) is equally self-contained (stdlib + pandas/numpy
+only, no `api/` imports) if a consumer wants the coordinate/footprint/validator logic too
+instead of just the loader. The same code is also available as the HTTP API below - both usage
+modes read from the same source, so a fix in one mode is a fix in the other.
 
 ## CLI usage
 
@@ -232,6 +266,8 @@ FastAPI auto-generates these from the code - no separate spec to maintain:
 | `POST /footprint/track/czml` | Same, as CZML scoped by `availability` so Cesium transitions it over time | `satellite_id` + time range (real DB) |
 | `POST /footprint/compute` | One footprint polygon (GeoJSON) for a manually given position/attitude | manual position + quaternion |
 | `POST /footprint/czml` | Same, as a single CZML packet | manual position + quaternion |
+| `POST /propagation/track` | SGP4-predicted TEME(~=ECI) position/velocity per timestamp | TLE + time range (no DB) |
+| `POST /propagation/track/czml` | Same, as a Cesium CZML position-only track | TLE + time range (no DB) |
 | `POST /validator/ops-status` | Settling-time / wheel-saturation PASS/WARN/FAIL | `satellite_id` + time range (real DB) |
 | `GET /health` | Liveness check, no auth | - |
 
@@ -364,6 +400,30 @@ curl -X POST "http://localhost:8000/footprint/track/czml" \
     "boresight_x": -1, "boresight_y": 0, "boresight_z": 0
   }'
 ```
+
+### Orbit propagation (TLE / SGP4, no DB)
+
+Independent of real telemetry - given a TLE, propagates the orbit over a time range via the
+`sgp4` package and returns TEME(~=ECI) position/velocity per timestamp. Useful for a predicted/
+planned trajectory to compare against real HK position, or when no live telemetry is available yet:
+
+```bash
+curl -X POST "http://localhost:8000/propagation/track" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "tle_line1": "1 88888U          80275.98708465  .00073094  13844-3  66816-4 0    87",
+    "tle_line2": "2 88888  72.8435 115.9689 0086731  52.6988 110.5714 16.05824518  1058",
+    "start_time": "1980-10-01T23:41:24.113760Z",
+    "end_time": "1980-10-01T23:51:24.113760Z",
+    "step_sec": 300
+  }'
+```
+
+(the TLE above is Vallado's canonical SGP4 verification case, satellite 88888 - the same one
+`tests/test_propagation.py` checks against; swap in a real satellite's current TLE for actual use)
+
+`POST /propagation/track/czml` returns the same track as a Cesium CZML `position` (no
+`orientation` - SGP4 gives no attitude).
 
 ### Ops status (settling time / wheel saturation)
 

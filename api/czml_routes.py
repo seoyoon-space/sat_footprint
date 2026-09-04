@@ -36,7 +36,8 @@ def czml_telemetry(
         df = loader.load(
             start_time=req.start_time,
             end_time=req.end_time,
-            satellite_id=None,
+            # satellite_id가 hk1~hk6 테이블 접두어(tbl_obs1a_hk*/tbl_obs1b_hk*)를 결정한다.
+            satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
         )

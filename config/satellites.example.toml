@@ -5,8 +5,11 @@
 #   2) 아래 값들을 실제 DB 접속 정보로 채우기
 #   3) config/satellites.toml 은 .gitignore에 등록되어 있으므로 절대 커밋하지 말 것
 #
-# 위성마다 DB 인스턴스 자체가 분리되어 있는 구조를 그대로 반영합니다
-# (예: O1A/O1B는 서로 다른 MySQL 호스트/DB일 수 있음).
+# O1A/O1B는 실제로는 같은 MySQL DB(nstanl)를 공유하고 hk1~hk6 테이블 이름만
+# 접두어(tbl_obs1a_hk*/tbl_obs1b_hk*)로 구분됩니다(core/loader/schema_map.py
+# SATELLITE_TABLE_PREFIX 참고). 이 파일에서 위성마다 섹션을 나누는 이유는 접속
+# 정보 자체가 다를 수 있는 위성(예: 별도 호스트를 쓰는 E3T 등)까지 등록 가능하게
+# 하기 위함이며, DB 인스턴스가 항상 위성별로 분리된다는 의미는 아닙니다.
 # satellite_id는 API 요청의 "satellite_id" 필드와 동일한 값을 사용해야 합니다.
 #
 # core/loader/hk_loader.py: HKLoader.for_satellite(satellite_id)

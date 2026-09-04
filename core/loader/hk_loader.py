@@ -63,13 +63,11 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
 
-from config import build_mysql_connection_url
-
 from .schema_map import (
     DEFAULT_MERGE_TOLERANCE_SEC,
-    HK_PACKET_SCHEMA,
     MASTER_PACKET,
     PacketSpec,
+    get_hk_packet_schema,
 )
 from .time_sync import merge_packets, slice_time_range
 
@@ -119,7 +117,9 @@ def _normalize_query_time(value: str | datetime | int | float, *, is_end: bool =
     return int(dt.astimezone(timezone.utc).timestamp())
 
 
-def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: float) -> dict[str, float]:
+def _build_tolerance_overrides(
+    schema: dict[str, PacketSpec], packet_names: list[str], merge_tolerance_sec: float
+) -> dict[str, float]:
     """패킷별 asof-merge 허용 오차를 PacketSpec.rate_hz로부터 계산.
 
     송신 주기가 느린 패킷은 허용 오차도 그만큼 넓혀야 매칭 실패로 인한 불필요한
@@ -128,10 +128,30 @@ def _build_tolerance_overrides(packet_names: list[str], merge_tolerance_sec: flo
     override한다(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
     """
     return {
-        name: max(merge_tolerance_sec, 0.5 / HK_PACKET_SCHEMA[name].rate_hz)
+        name: max(merge_tolerance_sec, 0.5 / schema[name].rate_hz)
         for name in packet_names
-        if HK_PACKET_SCHEMA[name].rate_hz > 0
+        if schema[name].rate_hz > 0
     }
+
+
+# 실측 HK 쿼터니언은 DB상 scalar-last(x,y,z,w) 순서로 저장되어 있음이 실제 미션
+# 데이터 기반 검증(A/B 비교)으로 확인됨. 이 프로젝트의 모든 회전 연산
+# (core.math_utils.quat 등)은 scalar-first(w,x,y,z)를 가정하므로, 컬럼명은
+# qbody_wrt_eci1..4 그대로 유지한 채 값만 여기서 한 번 재정렬해 이후 전부
+# (core 계산 + API)가 별도 처리 없이 scalar-first를 신뢰할 수 있게 한다.
+# q_ecef_wrt_eci1..4/cmd_q_body_wrt_eci1..4도 이름 규칙은 같지만, 현재 이 프로젝트의
+# 어떤 코드도 이 필드들을 소비하지 않고 순서도 별도 확인되지 않아 포함하지 않았다.
+_QUATERNION_SCALAR_LAST_GROUPS: tuple[tuple[str, str, str, str], ...] = (
+    ("qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"),
+)
+
+
+def _reorder_scalar_last_quaternions(df: pd.DataFrame) -> pd.DataFrame:
+    for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
+        if all(c in df.columns for c in (col1, col2, col3, col4)):
+            x, y, z, w = df[col1].copy(), df[col2].copy(), df[col3].copy(), df[col4].copy()
+            df[col1], df[col2], df[col3], df[col4] = w, x, y, z
+    return df
 
 
 class HKLoader:
@@ -139,9 +159,11 @@ class HKLoader:
         """
         connection_url: SQLAlchemy 접속 문자열 (예: mysql+pymysql://user:pass@host:3306/db)
         engine:         이미 생성된 Engine을 재사용하고 싶을 때 전달 (테스트용 등)
-        satellite_id_col: 같은 DB/테이블에 여러 위성 데이터가 섞여 있을 때 구분 컬럼명.
-                            위성별로 DB 자체가 분리되어 있으면(O1A/O1B가 실제로 그러함)
-                            None으로 두고 필터를 끄면 됩니다.
+        satellite_id_col: 위성별로 테이블 자체가 분리되지 않고, 하나의 테이블 안에 여러
+                            위성 데이터가 행 단위로 섞여 있는 경우에만 쓰는 구분 컬럼명.
+                            O1A/O1B는 같은 DB 안에서 테이블 자체가 위성별로 분리되어
+                            있으므로(get_hk_packet_schema 참고) 이 필터가 필요 없어
+                            None으로 둔다.
         """
         self.engine = engine or create_engine(connection_url, pool_pre_ping=True)
         self.satellite_id_col = satellite_id_col
@@ -155,7 +177,13 @@ class HKLoader:
     def from_env(cls, *, connection_url: str | None = None, schema: str | None = None) -> "HKLoader":
         """환경변수 기반으로 MySQL 연결 생성
            .env 파일 내 구조 확인
+
+        config 모듈은 여기(그리고 for_satellite())에서만 지연 임포트한다 - HKLoader(connection_url=...)
+        로 직접 생성해 쓰는 호출부(예: 이 파일만 다른 프로젝트에 그대로 옮겨 쓰는 경우)는
+        config.py가 아예 없어도 동작해야 하기 때문.
         """
+        from config import build_mysql_connection_url
+
         url = build_mysql_connection_url(connection_url=connection_url, schema=schema)
         return cls(connection_url=url, satellite_id_col=None)
 
@@ -163,7 +191,11 @@ class HKLoader:
     def for_satellite(cls, satellite_id: str) -> "HKLoader":
         """
         config/satellites.toml에 등록된 위성별 DB 프로필로 커넥션 생성.
-        O1A/O1B처럼 위성마다 DB 인스턴스 자체가 다른 구조를 그대로 반영.
+
+        실제 O1A/O1B는 같은 DB 인스턴스('nstanl')를 공유하고 테이블명만 위성별로
+        다르므로(get_hk_packet_schema 참고), 지금은 두 satellite_id를 같은 접속정보로
+        등록해두면 from_env()와 동일하게 동작한다. 이 메서드는 향후 어떤 위성이 실제로
+        별도 DB 인스턴스를 쓰게 되는 경우를 위한 확장 지점으로 남겨둔다.
         """
         from config import satellite_registry
 
@@ -267,7 +299,9 @@ class HKLoader:
         rename_map = {db_col: canonical for canonical, db_col in mapped_fields.items()}
         rename_map[time_col] = "time"
         df = df.rename(columns=rename_map)
-        return df[["time", *mapped_fields.keys()]]
+        df = df[["time", *mapped_fields.keys()]]
+        df = _reorder_scalar_last_quaternions(df)
+        return df
 
     def load(
         self,
@@ -283,15 +317,20 @@ class HKLoader:
             - KST 기준 날짜 문자열: "2026-08-20" 또는 "2026-08-20T12:00:00+09:00"
             - UTC ISO8601: "2026-08-20T00:00:00Z"
             - Unix epoch seconds: 1787203236
-        satellite_id:         위성 구분자 (O1A, E3T, O1B, BSS 등). None이면 필터 없음.
-        packets:               조회할 패킷 부분집합 (기본: HK_PACKET_SCHEMA 전체)
+        satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명이 위성마다
+                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 어떤 테이블을 조회할지
+                               고르는 데 쓰인다 - None이면 O1A 스키마가 기본값이다.
+                               (satellite_id_col이 별도로 설정된 경우, 같은 테이블 안에
+                               여러 위성이 섞여 있을 때의 행 필터로도 쓰인다.)
+        packets:               조회할 패킷 부분집합 (기본: 해당 위성 스키마 전체)
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
-        packet_names = packets or list(HK_PACKET_SCHEMA.keys())
+        schema = get_hk_packet_schema(satellite_id)
+        packet_names = packets or list(schema.keys())
 
         def _fetch(name: str) -> pd.DataFrame:
-            spec = HK_PACKET_SCHEMA[name]
+            spec = schema[name]
             return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
 
         # 패킷별 조회는 서로 독립적인 DB 왕복(SHOW COLUMNS + SELECT)이므로 병렬 실행.
@@ -312,7 +351,7 @@ class HKLoader:
                 "Cannot establish a common timebase."
             )
 
-        tolerance_overrides = _build_tolerance_overrides(packet_names, merge_tolerance_sec)
+        tolerance_overrides = _build_tolerance_overrides(schema, packet_names, merge_tolerance_sec)
 
         merged = merge_packets(
             packet_frames,
@@ -676,7 +715,7 @@ def main() -> None:
     df = loader.load(
         start_time=args.start_time,
         end_time=args.end_time,
-        satellite_id=None,
+        satellite_id=args.satellite_id,
         packets=args.packets,
         merge_tolerance_sec=args.merge_tolerance_sec,
         interpolate_gaps=not args.no_interpolate,

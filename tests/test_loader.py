@@ -21,13 +21,14 @@ from core.coordinates import (
 from core.loader.hk_loader import (
     _build_tolerance_overrides,
     _normalize_query_time,
+    _reorder_scalar_last_quaternions,
     _write_csv_output,
     _write_text_output,
     df_to_czml,
     extract_attitude_columns,
     _write_czml_output,
 )
-from core.loader.schema_map import HK_PACKET_SCHEMA, PacketSpec
+from core.loader.schema_map import HK_PACKET_SCHEMA, PacketSpec, get_hk_packet_schema
 from core.loader.time_sync import merge_packets, slice_time_range
 
 
@@ -196,7 +197,7 @@ def test_merge_packets_tolerance_overrides_widens_slow_packet_matching():
     )
 
 
-def test_build_tolerance_overrides_uses_rate_hz_with_merge_tolerance_as_floor(monkeypatch):
+def test_build_tolerance_overrides_uses_rate_hz_with_merge_tolerance_as_floor():
     """hk_loader._build_tolerance_overrides: PacketSpec.rate_hz -> 패킷별 허용 오차(초).
 
     느린 패킷(0.1Hz = 10초 주기)은 절반 주기(5초)로 넓어지고, 빠른 패킷(10Hz)은
@@ -207,9 +208,8 @@ def test_build_tolerance_overrides_uses_rate_hz_with_merge_tolerance_as_floor(mo
         "slow": PacketSpec(table="t_slow", time_col="timeUtc", fields={}, rate_hz=0.1),
         "fast": PacketSpec(table="t_fast", time_col="timeUtc", fields={}, rate_hz=10.0),
     }
-    monkeypatch.setattr("core.loader.hk_loader.HK_PACKET_SCHEMA", fake_schema)
 
-    overrides = _build_tolerance_overrides(["slow", "fast"], merge_tolerance_sec=1.0)
+    overrides = _build_tolerance_overrides(fake_schema, ["slow", "fast"], merge_tolerance_sec=1.0)
 
     assert overrides["slow"] == pytest.approx(5.0)
     assert overrides["fast"] == pytest.approx(1.0)
@@ -223,6 +223,54 @@ def test_real_o1b_hk_schema_contains_expected_columns():
     assert "cmd_stat" in HK_PACKET_SCHEMA["hk4"].fields
     assert "soh_sess_stat" in HK_PACKET_SCHEMA["hk5"].fields
     assert "l0_adc_word1_ch0" in HK_PACKET_SCHEMA["hk6"].fields
+
+
+def test_get_hk_packet_schema_selects_table_prefix_by_satellite_id():
+    """O1A/O1B는 같은 DB를 공유하고 테이블 접두어만 다르므로(tbl_obs1a_hk*/tbl_obs1b_hk*),
+    satellite_id에 따라 실제로 다른 테이블명이 나와야 한다 - 그렇지 않으면 O1B 요청이
+    조용히 O1A 데이터를 반환하는 회귀가 재발한다."""
+    o1a_schema = get_hk_packet_schema("O1A")
+    o1b_schema = get_hk_packet_schema("O1B")
+
+    assert o1a_schema["hk2"].table == "tbl_obs1a_hk2"
+    assert o1b_schema["hk2"].table == "tbl_obs1b_hk2"
+    # 컬럼 매핑 자체는 두 위성이 동일한 버스 설계를 공유하므로 같아야 한다.
+    assert o1a_schema["hk2"].fields == o1b_schema["hk2"].fields
+    # satellite_id 미지정 시 기존 호출부 호환을 위해 O1A 기본값을 반환.
+    assert get_hk_packet_schema(None) is HK_PACKET_SCHEMA
+
+
+def test_get_hk_packet_schema_rejects_unknown_satellite_id():
+    with pytest.raises(ValueError, match="E3T"):
+        get_hk_packet_schema("E3T")
+
+
+def test_reorder_scalar_last_quaternions_converts_xyzw_to_wxyz():
+    """qbody_wrt_eci1..4는 DB 원본이 scalar-last(x,y,z,w)이므로, 이 리포지토리 전역에서
+    쓰는 scalar-first(w,x,y,z) 컨벤션에 맞춰 로딩 시점에 재정렬되어야 한다."""
+    df = pd.DataFrame(
+        {
+            "qbody_wrt_eci1": [0.1],
+            "qbody_wrt_eci2": [0.2],
+            "qbody_wrt_eci3": [0.3],
+            "qbody_wrt_eci4": [0.9],
+            "other_col": [42.0],
+        }
+    )
+
+    reordered = _reorder_scalar_last_quaternions(df)
+
+    assert reordered["qbody_wrt_eci1"].iloc[0] == pytest.approx(0.9)
+    assert reordered["qbody_wrt_eci2"].iloc[0] == pytest.approx(0.1)
+    assert reordered["qbody_wrt_eci3"].iloc[0] == pytest.approx(0.2)
+    assert reordered["qbody_wrt_eci4"].iloc[0] == pytest.approx(0.3)
+    assert reordered["other_col"].iloc[0] == pytest.approx(42.0)
+
+
+def test_reorder_scalar_last_quaternions_noop_when_columns_missing():
+    df = pd.DataFrame({"unrelated": [1.0, 2.0]})
+    reordered = _reorder_scalar_last_quaternions(df)
+    pd.testing.assert_frame_equal(reordered, df)
 
 
 def test_normalize_query_time_uses_kst_date_input():
