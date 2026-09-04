@@ -28,6 +28,9 @@ __all__ = [
     "footprint_to_geojson",
     "footprint_to_czml",
     "footprint_track_to_czml",
+    "line_ground_points",
+    "line_to_geojson",
+    "line_track_to_czml",
 ]
 
 
@@ -273,6 +276,107 @@ def footprint_to_czml(
                 "point": {
                     "color": {"rgba": list(center_point_rgba)},
                     "pixelSize": center_point_pixel_size,
+                },
+            }
+        )
+
+    return czml
+
+
+def line_ground_points(
+    sat_pos_eci: Vector3,
+    quaternion_body2eci: Quaternion,
+    utc_datetime: datetime,
+    fov_across_deg: float,
+    boresight_body: Vector3 = (0.0, 0.0, 1.0),
+) -> dict:
+    """푸시브룸(라인스캔) 센서가 이 순간 스캔 중인 '한 줄'의 좌/우 지상점(WGS-84 타원체
+    근사)을 계산.
+
+    실제 카메라는 진행 방향(along-track)으로는 폭이 없는 한 줄만 그 순간 촬영하고,
+    위성이 이동하면서 그 줄들이 쌓여 2D 영상이 된다(DEM 서버 쪽 SensorConfig가
+    fov_across_deg 하나만 갖고 along-track FOV가 없는 것과 같은 모델). compute_footprint를
+    fov_y_deg=0으로 호출하는 특수 케이스로 재사용한다 - along-track 폭이 0이면 네
+    모서리가 좌/우 두 쌍으로 겹치므로(corners[0]==corners[3], corners[1]==corners[2]),
+    corners[0]/corners[1]이 그대로 이 줄의 좌/우 끝점이 된다. 어느 바디 축이 실제
+    across-track(폭 방향)인지는 compute_footprint/camera_rays_ecef와 동일하게
+    boresight_body(및 그로부터 유도되는 fov_corner_rays_body의 right/up 축)가 결정하므로,
+    호출자가 실제 카메라 마운팅에 맞는 boresight_body를 넘겨야 한다.
+    """
+    footprint = compute_footprint(
+        sat_pos_eci, quaternion_body2eci, utc_datetime, fov_across_deg, 0.0, boresight_body
+    )
+    corners = footprint.get("corners") or []
+    left = corners[0] if len(corners) > 0 else None
+    right = corners[1] if len(corners) > 1 else None
+    return {"left": left, "right": right, "visible": left is not None and right is not None}
+
+
+def line_to_geojson(line: dict, properties: dict | None = None) -> dict:
+    """line_ground_points() 결과를 GeoJSON FeatureCollection(LineString + 좌/우 Point)으로 변환."""
+    props = dict(properties or {})
+    features: list[dict] = []
+
+    left, right = line.get("left"), line.get("right")
+    if line.get("visible") and left is not None and right is not None:
+        features.append(
+            {
+                "type": "Feature",
+                "geometry": {"type": "LineString", "coordinates": [list(left), list(right)]},
+                "properties": props,
+            }
+        )
+        for point, role in ((left, "left"), (right, "right")):
+            features.append(
+                {
+                    "type": "Feature",
+                    "geometry": {"type": "Point", "coordinates": list(point)},
+                    "properties": {**props, "role": role},
+                }
+            )
+
+    return {"type": "FeatureCollection", "features": features}
+
+
+def line_track_to_czml(
+    samples: list[tuple[datetime, dict]],
+    *,
+    id_prefix: str = "line",
+    properties: dict | None = None,
+    default_duration_sec: float = 60.0,
+    line_rgba: tuple[int, int, int, int] = (0, 255, 255, 255),
+    line_width: float = 3.0,
+) -> list[dict]:
+    """(시각, line_ground_points() 결과) 샘플들을 시간에 따라 전환되는 CZML polyline
+    시퀀스로 변환 - footprint_track_to_czml과 동일한 availability 스코핑 방식."""
+    props = dict(properties or {})
+    czml: list[dict] = [{"id": "document", "version": "1.0"}]
+
+    def _iso(dt: datetime) -> str:
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.isoformat().replace("+00:00", "Z")
+
+    for i, (t, line) in enumerate(samples):
+        start_dt = t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+        end_dt = samples[i + 1][0] if i + 1 < len(samples) else start_dt + timedelta(seconds=default_duration_sec)
+        availability = f"{_iso(start_dt)}/{_iso(end_dt)}"
+
+        left, right = line.get("left"), line.get("right")
+        if not (line.get("visible") and left is not None and right is not None):
+            continue
+
+        lon1, lat1 = left
+        lon2, lat2 = right
+        czml.append(
+            {
+                "id": f"{id_prefix}_{i}",
+                "availability": availability,
+                "properties": {**props, "time": _iso(start_dt)},
+                "polyline": {
+                    "positions": {"cartographicDegrees": [lon1, lat1, 0.0, lon2, lat2, 0.0]},
+                    "material": {"solidColor": {"color": {"rgba": list(line_rgba)}}},
+                    "width": line_width,
                 },
             }
         )
