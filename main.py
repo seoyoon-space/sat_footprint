@@ -5,6 +5,7 @@ from starlette.middleware.cors import CORSMiddleware
 
 from api.czml_routes import router as czml_router
 from api.footprint_routes import router as footprint_router
+from api.mission_routes import router as mission_router
 from api.propagation_routes import router as propagation_router
 from api.routes import router as telemetry_router
 from api.validator_routes import router as validator_router
@@ -27,6 +28,7 @@ app.include_router(czml_router)  # same prefix '/telemetry'
 app.include_router(footprint_router)
 app.include_router(propagation_router)
 app.include_router(validator_router)
+app.include_router(mission_router)
 
 
 @app.get("/health")
