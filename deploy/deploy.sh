@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# 192.168.0.82:8080 같은 사내 test server에 sat_simulation_api를 Docker로 올리는 스크립트.
-# 서버에 SSH로 직접 접속해서 이 스크립트를 실행한다(로컬 개발 머신에서 원격 실행 불가 -
-# 이 레포를 clone할 서버 쪽 자격증명/파일시스템이 필요하기 때문).
 #
 # 사용법:
 #   ssh <user>@192.168.0.82
@@ -11,11 +8,14 @@
 #
 # .env / config/satellites.toml에 실제 값이 안 채워져 있으면 실행을 멈추고 안내만 하고 끝난다
 # (여기 스크립트가 비밀번호 등을 대신 채워 넣지 않는다 - 직접 채워야 함).
+#
+# 기본 포트가 8081인 이유: 192.168.0.82는 이미 EP(Event Planner) 서버가 8080을 쓰고 있는
+# 팀 개발 서버라(docs 참고), sat_simulation_api는 그 뒤에 다른 포트를 잡아 띄운다.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-HOST_PORT="${HOST_PORT:-8080}"
+HOST_PORT="${HOST_PORT:-8081}"
 IMAGE_NAME="sat-simulation-api"
 CONTAINER_NAME="sat-api"
 
