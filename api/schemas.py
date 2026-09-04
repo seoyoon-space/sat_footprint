@@ -99,6 +99,39 @@ class CameraRayTrackResponse(BaseModel):
     samples: list[CameraRaySample]
 
 
+class LineTrackRequest(BaseModel):
+    """실측 텔레메트리 기반, 푸시브룸(라인스캔) 센서가 각 시점에 스캔 중인 '한 줄'의
+    좌/우 지상점 조회 요청. along-track(진행 방향) 폭은 0으로 취급 - fov_across_deg
+    하나만 받는다(DEM 서버 쪽 SensorConfig와 동일한 단일-FOV 라인센서 모델).
+
+    시점 간격은 HK 텔레메트리 원본 샘플 주기(보통 ~1Hz) 그대로이며, 실제 카메라의
+    line_rate(초당 수백~수천 라인)만큼 보간하지 않는다 - 그 정밀도가 필요하면 DEM
+    서버의 Orekit/Rugged 파이프라인이 담당하는 영역이다.
+    """
+
+    satellite_id: str = Field(..., description="위성 코드 (예: O1A, E3T, O1B, BSS)")
+    start_time: datetime | str = Field(..., description="조회 시작 시각 (KST 또는 UTC)")
+    end_time: datetime | str = Field(..., description="조회 종료 시각 (KST 또는 UTC)")
+    merge_tolerance_sec: float = Field(1.0, description="HK 패킷 병합 시 asof 허용 오차(초)")
+    fov_across_deg: float = Field(..., gt=0, description="센서 폭 방향(across-track) 시야각 [deg]")
+    boresight_x: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 x")
+    boresight_y: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 y")
+    boresight_z: float = Field(1.0, description="바디 프레임 보어사이트 방향 벡터 z")
+
+
+class LineGroundPoint(BaseModel):
+    time: datetime
+    left: tuple[float, float] | None = Field(None, description="줄 왼쪽 끝 지상점 [lon, lat]")
+    right: tuple[float, float] | None = Field(None, description="줄 오른쪽 끝 지상점 [lon, lat]")
+    visible: bool
+
+
+class LineTrackResponse(BaseModel):
+    satellite_id: str
+    num_records: int
+    samples: list[LineGroundPoint]
+
+
 class PropagationTrackRequest(BaseModel):
     """TLE 기반 SGP4 궤도 전파 요청. DB 조회 없이(실측 텔레메트리와 무관) 순수 예측값을 낸다."""
 
@@ -166,3 +199,48 @@ class OpsStatusResponse(BaseModel):
     reasons: list[str]
     settling: SettlingResultSchema | None = None
     wheel_saturation: WheelSaturationReportSchema | None = None
+
+
+class MissionScheduleRequest(BaseModel):
+    """MCE(미션 스케줄링) DB 조회 요청 - HK DB(satellite_id 기반 텔레메트리)와는 별개의 DB."""
+
+    satellite_id: str = Field(..., description="위성 코드 (예: O1A, O1B)")
+    start_time: datetime = Field(..., description="조회 시작 시각 (UTC) - EventStart 기준")
+    end_time: datetime = Field(..., description="조회 종료 시각 (UTC) - EventStart 기준")
+
+
+class MissionScheduleRecord(BaseModel):
+    """core/mission/mce_db.py::_row_to_mission()의 필드와 1:1 대응."""
+
+    model_config = ConfigDict(extra="allow")
+
+    id: int
+    scheduleId: str
+    satelliteId: str | None = None
+    operationId: str | None = None
+    location: str | None = None
+    aoiId: str | None = None
+    latitude: float | None = None
+    longitude: float | None = None
+    eventStart: str | None = None
+    eventEnd: str | None = None
+    eventStartKST: str | None = None
+    eventEndKST: str | None = None
+    duration: float | None = None
+    maxEl: float | None = None
+    cloudAmount: float | None = None
+    requestedScanTime: float | None = None
+    note: str | None = None
+    missionStatus: str | None = None
+    imageStatus: str | None = None
+    clientData: dict | list | None = None
+    results: dict | list | None = None
+    scanStart: str | None = Field(None, description="실제 카메라 스캔 시작 시각(ISO8601 UTC)")
+    camStart: str | None = Field(None, description="실제 카메라 ON 시각(ISO8601 UTC)")
+    camEnd: str | None = Field(None, description="실제 카메라 OFF 시각(ISO8601 UTC)")
+
+
+class MissionScheduleResponse(BaseModel):
+    satellite_id: str
+    num_records: int
+    missions: list[MissionScheduleRecord]
