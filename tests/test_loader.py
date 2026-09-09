@@ -19,13 +19,16 @@ from core.coordinates import (
     rotate_vector_by_quaternion,
 )
 from core.loader.hk_loader import (
+    HKLoader,
     _build_tolerance_overrides,
+    _default_output_path,
     _normalize_query_time,
     _reorder_scalar_last_quaternions,
     _write_csv_output,
     _write_text_output,
     df_to_czml,
     extract_attitude_columns,
+    main as hk_loader_main,
     _write_czml_output,
 )
 from core.loader.schema_map import HK_PACKET_SCHEMA, PacketSpec, get_hk_packet_schema
@@ -335,6 +338,44 @@ def test_df_to_czml_basic(tmp_path):
     txt = out.read_text(encoding="utf-8")
     assert "document" in txt
     assert "test_0" in txt
+
+
+def test_default_output_path_uses_czml_extension_for_czml_format(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    path = _default_output_path("2026-08-20", "2026-08-21", output_format="czml")
+    assert path.endswith(".czml")
+
+
+def test_cli_main_writes_czml_when_output_format_is_czml(tmp_path, monkeypatch):
+    """--output-format czml이 main()에서 실제로 _write_czml_output까지 이어지는지
+    (CSV/txt 분기만 있고 czml 분기가 없어 항상 텍스트 미리보기로 떨어지던 버그의 회귀 테스트)."""
+    df = pd.DataFrame({"time": pd.to_datetime(["2026-08-20T00:00:00Z"], utc=True), "value": [1.0]})
+
+    class _FakeLoader:
+        def load(self, **kwargs):
+            return df
+
+    monkeypatch.setattr(HKLoader, "for_satellite", classmethod(lambda cls, satellite_id: _FakeLoader()))
+
+    out_path = tmp_path / "out.czml"
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "hk_loader",
+            "--satellite-id", "O1A",
+            "--start-time", "2026-08-20",
+            "--end-time", "2026-08-21",
+            "--output-format", "czml",
+            "--output", str(out_path),
+        ],
+    )
+
+    hk_loader_main()
+
+    assert out_path.exists()
+    content = out_path.read_text(encoding="utf-8")
+    assert '"document"' in content
+    assert '"value": 1.0' in content
 
 
 def test_coordinate_utilities_and_quaternion_rotation():
