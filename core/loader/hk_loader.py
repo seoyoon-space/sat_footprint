@@ -406,7 +406,7 @@ def _default_output_path(
 
     start_label = start_dt.strftime("%Y%m%dT%H%M%S")
     end_label = end_dt.strftime("%Y%m%dT%H%M%S")
-    ext = ".csv" if output_format == "csv" else ".txt"
+    ext = {"csv": ".csv", "czml": ".czml"}.get(output_format, ".txt")
     output_dir = Path("hk_output")
     output_dir.mkdir(parents=True, exist_ok=True)
     return str(output_dir / f"{prefix}_{start_label}_{end_label}{ext}")
@@ -728,6 +728,8 @@ def main() -> None:
 
     if args.output_format == "csv":
         _write_csv_output(args.output, df=df)
+    elif args.output_format == "czml":
+        _write_czml_output(args.output, df=df)
     else:
         _write_text_output(args.output, df=df, max_rows=args.max_rows)
 
