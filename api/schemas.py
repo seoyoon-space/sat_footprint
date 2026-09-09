@@ -48,6 +48,24 @@ class TelemetryResponse(BaseModel):
     records: list[TelemetryRecord]
 
 
+class MissionHkResponse(BaseModel):
+    """DEM 서버의 czml_generator.py::generate_czml()이 받는 `mission_hk` dict와 같은
+    필드명/배열 형태(컬럼별 배열, camelCase). 값 자체는 이 API의 다른 엔드포인트와
+    동일하게 이미 보정된 최종값이다(위치 m, qbodyWrtEci는 Body->ECI) - generate_czml()이
+    자체적으로 걸던 km->m 변환과 재정렬+conjugate는 이 응답에 대해서는 걸면 안 된다
+    (README "DEM 서버 연동" 참고).
+    """
+
+    taiSeconds: list[float] = Field(..., description="Unix epoch 초")
+    posWrtEci1: list[float] = Field(..., description="위치 ECI X [m]")
+    posWrtEci2: list[float] = Field(..., description="위치 ECI Y [m]")
+    posWrtEci3: list[float] = Field(..., description="위치 ECI Z [m]")
+    qbodyWrtEci1: list[float] = Field(..., description="자세 쿼터니언 x (Body->ECI)")
+    qbodyWrtEci2: list[float] = Field(..., description="자세 쿼터니언 y (Body->ECI)")
+    qbodyWrtEci3: list[float] = Field(..., description="자세 쿼터니언 z (Body->ECI)")
+    qbodyWrtEci4: list[float] = Field(..., description="자세 쿼터니언 w (Body->ECI, scalar)")
+
+
 class FootprintRequest(BaseModel):
     pos_eci_x: float = Field(..., description="위성 위치 ECI X [m]")
     pos_eci_y: float = Field(..., description="위성 위치 ECI Y [m]")

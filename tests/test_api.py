@@ -76,6 +76,30 @@ def test_health_check_requires_no_auth():
     assert resp.json() == {"status": "ok"}
 
 
+def test_mission_hk_matches_dem_field_names_and_positional_convention(fake_loader):
+    """/telemetry/mission-hk는 DEM 서버 czml_generator.py의 mission_hk dict와 같은
+    camelCase 필드명·배열 형태를 쓰되, 값은 이 API의 다른 곳과 동일한 최종(보정된)
+    값이어야 한다 - qbody_wrt_eci1(w)이 qbodyWrtEci4(w 자리, DEM 필드 순서)로,
+    qbody_wrt_eci2/3/4(x,y,z)가 qbodyWrtEci1/2/3으로 재배치되지만 conjugate는
+    걸리지 않는다(이미 Body->ECI로 보정된 값이므로)."""
+    resp = client.post(
+        "/telemetry/mission-hk",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["taiSeconds"][0] == pytest.approx(1787184000.0)
+    assert body["posWrtEci1"] == [7000e3, 7001e3, 7002e3]
+    assert body["qbodyWrtEci4"] == [1.0, 1.0, 1.0]  # w
+    assert body["qbodyWrtEci1"] == [0.0, 0.0, 0.0]  # x
+    assert body["qbodyWrtEci2"] == [0.0, 0.0, 0.0]  # y
+    assert body["qbodyWrtEci3"] == [0.0, 0.0, 0.0]  # z
+
+
 def test_telemetry_query_uses_real_canonical_field_names(fake_loader):
     resp = client.post(
         "/telemetry/query",
