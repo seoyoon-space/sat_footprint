@@ -154,6 +154,43 @@ def _reorder_scalar_last_quaternions(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+# qbody_wrt_eci1..4가 실제로는 ECI->Body 회전을 담고 있다는 사실이 DEM 서버 쪽
+# 실사용 코드(czml_generator.py, HK 필드 문서에 "ECI-to-Body"로 명시하고 실제로
+# quaternion_conjugate()를 걸어 Body->ECI로 뒤집은 뒤에만 사용)로 확인됨 - 이 프로젝트의
+# core.coordinates/core.geometry.footprint는 처음부터 "body->ECI를 받는다"고 가정하고
+# 지어졌으므로(quaternion_body2eci라는 인자명 자체가 그 전제), 그 전제를 실제로 맞추려면
+# 로딩 경계에서 켤레(conjugate)를 한 번 취해야 한다. 쿼터니언 켤레는 스칼라부(w)는 그대로
+# 두고 벡터부(x,y,z) 부호만 뒤집으면 되므로, 이미 scalar-first로 재정렬된 뒤에 적용한다
+# (_reorder_scalar_last_quaternions가 먼저 실행되어야 어느 성분이 w인지 알 수 있음).
+def _invert_quaternion_rotation_direction(df: pd.DataFrame) -> pd.DataFrame:
+    # 이 함수는 _reorder_scalar_last_quaternions 이후에 호출되므로 컬럼 순서는 이미
+    # (w, x, y, z) - w(col1)는 그대로 두고 벡터부 x,y,z(col2~4)의 부호만 뒤집는다.
+    for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
+        if all(c in df.columns for c in (col1, col2, col3, col4)):
+            df[col2] = -df[col2]
+            df[col3] = -df[col3]
+            df[col4] = -df[col4]
+    return df
+
+
+# pos_wrt_eci1..3(위치)/vel_wrt_eci1..3(속도)는 DB 원본이 킬로미터(킬로미터/초) 단위로
+# 저장되어 있음이 확인됨(DEM 서버 czml_generator.py도 동일 필드를 km으로 문서화하고
+# 실제로 *1000.0으로 m 변환해 사용). 이 프로젝트의 core.coordinates/core.geometry.footprint는
+# WGS84_A 등 전부 미터 기준으로 지어졌으므로, 로딩 경계에서 한 번 미터로 변환해 이후
+# 전부(core 계산 + API 응답)가 별도 처리 없이 미터임을 신뢰할 수 있게 한다.
+_KM_TO_M_COLUMNS: tuple[str, ...] = (
+    "pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3",
+    "vel_wrt_eci1", "vel_wrt_eci2", "vel_wrt_eci3",
+)
+
+
+def _convert_km_to_m(df: pd.DataFrame) -> pd.DataFrame:
+    for col in _KM_TO_M_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col] * 1000.0
+    return df
+
+
 class HKLoader:
     def __init__(self, connection_url: str, engine: Engine | None = None, satellite_id_col: str | None = None):
         """
@@ -301,6 +338,8 @@ class HKLoader:
         df = df.rename(columns=rename_map)
         df = df[["time", *mapped_fields.keys()]]
         df = _reorder_scalar_last_quaternions(df)
+        df = _invert_quaternion_rotation_direction(df)
+        df = _convert_km_to_m(df)
         return df
 
     def load(

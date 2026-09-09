@@ -23,6 +23,8 @@ from core.loader.hk_loader import (
     _build_tolerance_overrides,
     _default_output_path,
     _normalize_query_time,
+    _convert_km_to_m,
+    _invert_quaternion_rotation_direction,
     _reorder_scalar_last_quaternions,
     _write_csv_output,
     _write_text_output,
@@ -274,6 +276,92 @@ def test_reorder_scalar_last_quaternions_noop_when_columns_missing():
     df = pd.DataFrame({"unrelated": [1.0, 2.0]})
     reordered = _reorder_scalar_last_quaternions(df)
     pd.testing.assert_frame_equal(reordered, df)
+
+
+def test_invert_quaternion_rotation_direction_negates_vector_part_only():
+    """DEM 서버 실사용 코드(czml_generator.py)가 qbodyWrtEci를 ECI->Body로 문서화하고
+    실제로 conjugate를 걸어 Body->ECI로 뒤집은 뒤에만 쓰는 것으로 확인됨 - 이 프로젝트의
+    core.coordinates/core.geometry.footprint는 처음부터 Body->ECI 입력을 가정하므로,
+    스칼라부(w, col1)는 그대로 두고 벡터부(x,y,z)만 부호를 뒤집어야 한다."""
+    df = pd.DataFrame(
+        {
+            "qbody_wrt_eci1": [0.9],  # w (이미 scalar-first로 재정렬된 뒤라고 가정)
+            "qbody_wrt_eci2": [0.1],  # x
+            "qbody_wrt_eci3": [0.2],  # y
+            "qbody_wrt_eci4": [0.3],  # z
+            "other_col": [42.0],
+        }
+    )
+
+    inverted = _invert_quaternion_rotation_direction(df)
+
+    assert inverted["qbody_wrt_eci1"].iloc[0] == pytest.approx(0.9)
+    assert inverted["qbody_wrt_eci2"].iloc[0] == pytest.approx(-0.1)
+    assert inverted["qbody_wrt_eci3"].iloc[0] == pytest.approx(-0.2)
+    assert inverted["qbody_wrt_eci4"].iloc[0] == pytest.approx(-0.3)
+    assert inverted["other_col"].iloc[0] == pytest.approx(42.0)
+
+
+def test_invert_quaternion_rotation_direction_noop_when_columns_missing():
+    df = pd.DataFrame({"unrelated": [1.0, 2.0]})
+    inverted = _invert_quaternion_rotation_direction(df)
+    pd.testing.assert_frame_equal(inverted, df)
+
+
+def test_convert_km_to_m_scales_position_and_velocity_columns():
+    """DB 원본 pos_wrt_eci1..3/vel_wrt_eci1..3는 킬로미터(킬로미터/초) 단위로 저장되어
+    있음이 확인됨 - 이 프로젝트의 core.coordinates 등은 전부 미터 기준이므로 로딩
+    경계에서 1000을 곱해 미터로 변환해야 한다."""
+    df = pd.DataFrame(
+        {
+            "pos_wrt_eci1": [7000.0],
+            "pos_wrt_eci2": [100.0],
+            "pos_wrt_eci3": [-50.0],
+            "vel_wrt_eci1": [7.5],
+            "vel_wrt_eci2": [0.1],
+            "vel_wrt_eci3": [-0.2],
+            "other_col": [42.0],
+        }
+    )
+
+    converted = _convert_km_to_m(df)
+
+    assert converted["pos_wrt_eci1"].iloc[0] == pytest.approx(7_000_000.0)
+    assert converted["pos_wrt_eci2"].iloc[0] == pytest.approx(100_000.0)
+    assert converted["pos_wrt_eci3"].iloc[0] == pytest.approx(-50_000.0)
+    assert converted["vel_wrt_eci1"].iloc[0] == pytest.approx(7_500.0)
+    assert converted["vel_wrt_eci2"].iloc[0] == pytest.approx(100.0)
+    assert converted["vel_wrt_eci3"].iloc[0] == pytest.approx(-200.0)
+    assert converted["other_col"].iloc[0] == pytest.approx(42.0)
+
+
+def test_convert_km_to_m_noop_when_columns_missing():
+    df = pd.DataFrame({"unrelated": [1.0, 2.0]})
+    converted = _convert_km_to_m(df)
+    pd.testing.assert_frame_equal(converted, df)
+
+
+def test_raw_db_quaternion_becomes_scalar_first_body_to_eci_end_to_end():
+    """_fetch_packet이 실제로 거는 두 보정(재정렬 -> 켤레)을 순서대로 적용했을 때,
+    DB 원본(x,y,z,w, ECI->Body)이 최종적으로 이 프로젝트 전역이 기대하는
+    (w,-x,-y,-z, Body->ECI, scalar-first)가 되는지 - 두 보정이 함께 있을 때만
+    성립하는 종단 간 계약이라 별도로 고정해둔다."""
+    x0, y0, z0, w0 = 0.1, 0.2, 0.3, 0.9
+    df = pd.DataFrame(
+        {
+            "qbody_wrt_eci1": [x0],
+            "qbody_wrt_eci2": [y0],
+            "qbody_wrt_eci3": [z0],
+            "qbody_wrt_eci4": [w0],
+        }
+    )
+
+    result = _invert_quaternion_rotation_direction(_reorder_scalar_last_quaternions(df))
+
+    assert result["qbody_wrt_eci1"].iloc[0] == pytest.approx(w0)
+    assert result["qbody_wrt_eci2"].iloc[0] == pytest.approx(-x0)
+    assert result["qbody_wrt_eci3"].iloc[0] == pytest.approx(-y0)
+    assert result["qbody_wrt_eci4"].iloc[0] == pytest.approx(-z0)
 
 
 def test_normalize_query_time_uses_kst_date_input():
