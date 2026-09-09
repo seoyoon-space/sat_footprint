@@ -11,6 +11,10 @@ This project loads housekeeping data from the real DB layout used in the target 
   selected by the `satellite_id` argument (see [Schema map](#schema-map))
 - Time column: `timeUtc`
 - Time unit: Unix epoch seconds (UTC)
+- Position unit: the raw DB stores `posWrtEci1..3`/`velWrtEci1..3` in kilometers
+  (kilometers/second) - `HKLoader._fetch_packet()` converts to meters (meters/second) at load
+  time, so `pos_wrt_eci1..3`/`vel_wrt_eci1..3` are always meters/meters-per-second by the time
+  they reach `core/` or the API (see [Schema map](#schema-map))
 
 Users can provide KST or UTC timestamps in friendly formats such as:
 
@@ -104,10 +108,25 @@ Time semantics:
 - User-facing input: KST or UTC strings are accepted and internally normalized
 - Output DataFrame: standard `time` column in UTC-aware pandas timestamps
 
-Quaternion semantics: `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) in the raw DB, but
-`HKLoader._fetch_packet()` reorders it to this project's scalar-first (w,x,y,z) convention
-before returning - so the DataFrame values are always scalar-first even though the column names
-don't change.
+Quaternion semantics: the raw DB `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) **and** represents
+an ECI-to-Body rotation - confirmed against the DEM server's own production code
+(`czml_generator.py`, which documents these exact fields as "(ECI-to-Body)" and explicitly
+conjugates them before use). This project's coordinate/footprint code has always expected a
+Body-to-ECI, scalar-first quaternion (the `quaternion_body2eci` naming throughout
+`core/coordinates.py`/`core/geometry/footprint.py`), so `HKLoader._fetch_packet()` applies both
+corrections at the loading boundary - `_reorder_scalar_last_quaternions` (x,y,z,w -> w,x,y,z),
+then `_invert_quaternion_rotation_direction` (conjugate: negate x,y,z, keep w) - so the
+DataFrame values are always Body-to-ECI, scalar-first, even though the column names don't
+change. This applies only to `qbody_wrt_eci1..4`; `q_ecef_wrt_eci1..4`/`cmd_q_body_wrt_eci1..4`
+share the naming pattern but are unconfirmed and unused, so neither correction touches them.
+
+Position/velocity units: the raw DB `posWrtEci1..3`/`velWrtEci1..3` are kilometers
+(kilometers/second) - also confirmed against `czml_generator.py`, which documents and converts
+the same fields from km. `HKLoader._fetch_packet()` multiplies `pos_wrt_eci1..3`/
+`vel_wrt_eci1..3` by 1000 (`_convert_km_to_m`) at the same loading boundary as the quaternion
+corrections above, so these are always meters/meters-per-second by the time anything else sees
+them - `core/coordinates.py`'s WGS-84 constants and every ellipsoid/footprint calculation are
+written assuming meters throughout.
 
 ## Python usage
 
@@ -260,6 +279,7 @@ FastAPI auto-generates these from the code - no separate spec to maintain:
 | Endpoint | Purpose | Input driver |
 |---|---|---|
 | `POST /telemetry/query` | Raw merged HK telemetry records | `satellite_id` + time range (real DB) |
+| `POST /telemetry/mission-hk` | Same position/attitude, shaped as the DEM server's `mission_hk` dict (camelCase, column arrays) | `satellite_id` + time range (real DB) |
 | `POST /telemetry/czml` | Satellite ground track + attitude for Cesium | `satellite_id` + time range (real DB) |
 | `POST /footprint/rays` | Camera ray (ECEF origin + 5 unit directions), no terrain intersection - for a caller with its own DEM | `satellite_id` + time range (real DB) |
 | `POST /footprint/track` | Footprint polygon per timestamp (GeoJSON), WGS-84 ellipsoid approximation | `satellite_id` + time range (real DB) |
@@ -334,6 +354,31 @@ resp = requests.post(
 print(resp.status_code)
 print(resp.json())
 ```
+
+### DEM server export format (`mission_hk`)
+
+`POST /telemetry/mission-hk` returns the same position/attitude as `/telemetry/query`, but
+shaped as column arrays with the DEM server's own `czml_generator.py` field names
+(`taiSeconds`, `posWrtEci1..3`, `qbodyWrtEci1..4`) instead of this project's canonical
+snake_case names - so a consumer already built against that shape needs no renaming:
+
+```bash
+curl -X POST "http://localhost:8000/telemetry/mission-hk" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "satellite_id": "O1A",
+    "start_time": "2026-08-20T00:00:00Z",
+    "end_time": "2026-08-20T01:00:00Z"
+  }'
+```
+
+**The field names match, but the values are this project's final, corrected values, not raw
+DB values** - `posWrtEci1..3` are meters, and `qbodyWrtEci1..4` is a Body-to-ECI quaternion
+(`1=x, 2=y, 3=z, 4=w`; putting `w` in slot 4 only matches the DEM field's positional
+convention, it does not mean scalar-last). If the DEM server's existing
+`czml_generator.py::generate_czml()` is pointed at this endpoint's output, its own internal
+`* 1000.0` (km->m) and quaternion reorder+conjugate must be removed first - re-applying them
+would corrupt already-correct values.
 
 CZML ground track + attitude (loads directly into a `Cesium.CzmlDataSource`):
 
