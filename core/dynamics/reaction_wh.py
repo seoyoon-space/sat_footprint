@@ -11,7 +11,7 @@ class ReactionWheel(ActuatorModel):
     ActuatorModel 인터페이스를 그대로 상속했지만 반작용휠에는 의미 없는
     값입니다(호환성을 위해 시그니처만 유지, 내부에서 사용 안 함).
     현재 텔레메트리 기반 재구성 경로(core/reconstruction)는 이 클래스를
-    쓰지 않고 필요한 값을 텔레메트리에서 직접 계산합니다.
+    쓰지 않고 필요한 값을 텔레메트리에서 직접 계산.
     """
     def __init__(self, allocation_matrix: np.ndarray, max_torque: float = 0.05, max_rpm: float = 5000.0, inertia_wheel: float = 1e-4):
         self.allocation_matrix = allocation_matrix          # 휠 분배 행렬 (Body Torque <-> Wheel Torques)

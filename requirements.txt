@@ -3,11 +3,8 @@
 # 발사체 GNC 시뮬레이션 - MATLAB 원본 포팅)는 numpy/scipy를 직접 사용하므로
 # 테스트 실행 및 CI를 위해 여기 포함한다.
 #
-# sgp4는 유일한 명시적 예외: core/propagation.py의 TLE 궤도 전파에 사용. SGP4는 WGS-72
-# 경험 상수가 많고 미묘한 엣지케이스(deep-space 공진 등)가 있어 직접 구현 시 조용히
-# 틀리기 쉬운 알고리즘이라, Vallado의 공식 검증 벡터로 지속 검증되는 성숙한 구현체를
-# 그대로 채택(core/coordinates.py 등 나머지 계산 코드는 여전히 자체 구현 원칙 유지).
-#
+# sgp4 명시적 예외: core/propagation.py의 TLE 궤도 전파에 사용. SGP4는 WGS-72
+# vallado 모델을 기반으로 사용
 # httpx는 테스트 전용: fastapi.testclient.TestClient(starlette 기반)가 내부적으로 요구.
 # 런타임에는 사용 안됨. 
 

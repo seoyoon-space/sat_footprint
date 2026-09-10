@@ -13,7 +13,6 @@ class Controller(ABC):
     def get_control(self, state, current_cum_velocity: float, current_time: float) -> np.ndarray:
         """
         Calculate control torque/input based on current state and accumulated wheel velocity.
-        Must be implemented in a subclass.
         """
         pass
 
@@ -21,7 +20,6 @@ class Controller(ABC):
     def populate_break_points(self) -> None:
         """
         Populate breakpoints for scheduled controllers.
-        Must be implemented in a subclass.
         """
         pass
 

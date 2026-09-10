@@ -6,8 +6,7 @@
 #   git checkout doeun-space
 #   bash deploy/deploy.sh
 #
-# .env / config/satellites.toml에 실제 값이 안 채워져 있으면 실행을 멈추고 안내만 하고 끝난다
-# (여기 스크립트가 비밀번호 등을 대신 채워 넣지 않는다 - 직접 채워야 함).
+# .env / config/satellites.toml에 실제 값이 안 채워져 있으면 실행을 멈추고 안내만 하고 끝남
 #
 # 192.168.0.82:8080은 이미 EP(Event Planner) 서버가 쓰고 있는 팀 공용 진입점이라(docs 참고),
 # 이 컨테이너는 8080과 부딪히지 않도록 127.0.0.1:8081(로컬호스트에만 바인딩, 외부에서 직접

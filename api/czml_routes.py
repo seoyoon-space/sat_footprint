@@ -36,7 +36,6 @@ def czml_telemetry(
         df = loader.load(
             start_time=req.start_time,
             end_time=req.end_time,
-            # satellite_id가 hk1~hk6 테이블 접두어(tbl_obs1a_hk*/tbl_obs1b_hk*)를 결정한다.
             satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
@@ -51,7 +50,7 @@ def czml_telemetry(
     if all(c in df.columns for c in q_cols) and include_pointing:
         # df.apply(axis=1)은 행마다 Series를 새로 만들어 느리므로(core/loader/hk_loader.py의
         # df_to_czml, core/coordinates.py의 build_cesium_track_czml과 동일한 이유로),
-        # 원본 dtype을 보존하는 itertuples로 순회한다.
+        # 원본 dtype을 보존하는 itertuples로 순회.
         pointing_values = []
         for q1, q2, q3, q4 in df[q_cols].itertuples(index=False, name=None):
             try:

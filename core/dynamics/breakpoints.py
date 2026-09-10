@@ -34,7 +34,7 @@ class BreakPoints:
             time_nominal, states, control_inputs, actuator_states
         )
 
-        # 누적 속도 계산 (vx, vy, vz 가정)
+        # 누적 속도 계산 (vx, vy, vz)
         vx = states[3, :]
         vy = states[4, :]
         vz = states[5, :]

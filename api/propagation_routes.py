@@ -14,7 +14,7 @@ from .schemas import PropagationSample, PropagationTrackRequest, PropagationTrac
 
 router = APIRouter(prefix="/propagation", tags=["propagation"], dependencies=[Depends(require_api_key)])
 
-MAX_SAMPLES = 5000  # 과도하게 촘촘한/긴 요청으로 인한 부하 방지
+MAX_SAMPLES = 5000  # 부하 방지 (값은 조절가능)
 
 
 def _propagate_track(req: PropagationTrackRequest) -> list[PropagationSample]:
@@ -51,8 +51,8 @@ def _propagate_track(req: PropagationTrackRequest) -> list[PropagationSample]:
 def propagation_track_endpoint(req: PropagationTrackRequest) -> PropagationTrackResponse:
     """TLE로부터 지정 구간을 SGP4로 전파해 시점별 TEME(~=ECI) 위치/속도를 반환.
 
-    실측 텔레메트리와 무관한 순수 예측값이다 - 설계/사전계획 단계의 예상 궤도가
-    필요할 때, 또는 HK 텔레메트리 위치와 대조해 궤도전파 정확도를 교차검증할 때 쓴다.
+    실측 텔레메트리와 무관한 순수 예측 - 설계/사전계획 단계의 예상 궤도가 필요할 때, 
+    또는 HK 텔레메트리 위치와 대조해 궤도전파 정확도를 교차검증할 때 사용하는 용동임.
     """
     samples = _propagate_track(req)
     return PropagationTrackResponse(num_records=len(samples), samples=samples)

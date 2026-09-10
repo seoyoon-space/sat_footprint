@@ -440,14 +440,8 @@ HK6_FIELDS = (
 # 데이터는 hk1~hk6 각각 실제 컬럼명을 그대로 사용, 병합 로직이 예측 가능
 # canonical 이름으로 매핑되도록 실제 HK 정의서 기준으로 구성.
 # 실제 DB 스키마는 MySQL schema 'nstanl' 안에 tbl_obs1a_hk1 / tbl_obs1a_hk2 ... 형식으로
-# 구성되어 있으며, 시간값은 Unix epoch UTC(초) 기준으로 저장됩니다.
-# 따라서 table 이름과 time 컬럼을 실제 구조에 맞춰 재정의한다.
-#
-# O1A/O1B는 같은 버스 설계라 hk1~hk6 컬럼 구조가 동일하고, 같은 DB('nstanl') 안에서
-# 위성별로 테이블만 분리되어 있다(tbl_obs1a_hk* / tbl_obs1b_hk*) - 별도 DB 인스턴스가
-# 아니라 테이블 접두어만 다름(SHOW TABLES 결과로 확인됨, posWrtEci/velWrtEci/qbodyWrtEci
-# 등 세부 컬럼도 동일). 이전 버전은 이 사실을 반영하지 못해 satellite_id와 무관하게
-# 항상 tbl_obs1a_hk*만 조회했다 - O1B 요청이 실제로는 O1A 데이터를 반환하던 버그였음.
+# 구성되어 있으며, 시간값은 Unix epoch UTC(초) 기준으로 저장함.
+
 HK1_FIELDS_MAP = _field_map(*HK1_FIELDS)
 HK2_FIELDS_MAP = _field_map(*HK2_FIELDS)
 HK3_FIELDS_MAP = _field_map(*HK3_FIELDS)

@@ -1,14 +1,8 @@
-"""MCE(미션 스케줄링) 서버 DB에서 미션 스케줄과 실제 카메라 ON/OFF 구간을 읽어온다.
+"""MCE(미션 스케줄링) 서버 DB에서 미션 스케줄과 실제 카메라 ON/OFF 구간을 읽어옴.
 
-HK DB(nstanl, core/loader 쪽이 다루는 위성 텔레메트리)와는 완전히 별개의 DB다 - 이 DB는
-"언제 어떤 위성이 무엇을 촬영하도록 예약/실행됐는지"를 담은 미션 스케줄 테이블
-(TB_Selected_Mission_Schedule)을 갖고 있다. EventStart/EventEnd는 스케줄링/패스
-구간이라 실제 촬영 시간(보통 ~10초대)보다 훨씬 넓으므로, MissionParameterJson에
-담긴 카메라 타이밍 파라미터로부터 실제 ON~OFF 구간을 별도 계산해야 한다
-(compute_camera_window 참고) - DEM 서버 쪽 attitude-viewer/mce_db.py의 동일 로직을
-그대로 포팅.
+DEM 서버 쪽 attitude-viewer/mce_db.py의 동일 로직을 그대로 포팅.
 
-읽기 전용: 이 모듈은 SELECT만 수행한다 - 절대 이 DB에 쓰지 않는다.
+읽기 전용: 이 모듈은 SELECT만 수행 
 """
 from __future__ import annotations
 
@@ -23,7 +17,7 @@ def _iso_utc(dt: datetime | None) -> str | None:
         return None
     # timespec="milliseconds": JS Date는 소수점 자릿수가 정확히 3자리여야 파싱된다 -
     # 이 컬럼은 datetime(6)(마이크로초)이라 그대로 isoformat()하면 "...496143Z" 같은
-    # 값이 나와 프론트엔드 Date 파싱이 깨진다(원본 DEM 서버 코드에서 확인된 문제).
+    # 값이 나와 프론트엔드 Date 파싱이 깨진다 (DEM 서버 코드에서 확인된 문제).
     return dt.replace(tzinfo=timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 

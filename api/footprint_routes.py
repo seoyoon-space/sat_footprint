@@ -64,7 +64,6 @@ def _load_real_telemetry_samples(
         df = loader.load(
             start_time=req.start_time,
             end_time=req.end_time,
-            # satellite_id가 hk1~hk6 테이블 접두어(tbl_obs1a_hk*/tbl_obs1b_hk*)를 결정한다.
             satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
         )
@@ -106,7 +105,7 @@ def compute_footprint_endpoint(req: FootprintRequest) -> dict:
 def footprint_czml_endpoint(req: FootprintRequest) -> list:
     """위성 위치/자세/촬영 시각으로부터 카메라 FOV의 지상 풋프린트를 CZML로 반환.
 
-    Cesium에 직접 로드 가능한 패킷 리스트(document + polygon + boresight point)반화. 
+    Cesium에 직접 로드 가능한 패킷 리스트(document + polygon + boresight point) 반환. 
     `/telemetry/czml`(위성 궤적/자세)과 함께 로드하면 같은 뷰어에서
     궤적과 촬영 영역을 동시에 시각화 가능.
     """
@@ -120,8 +119,8 @@ def camera_ray_track_endpoint(req: CameraRayTrackRequest) -> CameraRayTrackRespo
     광선(ECEF 원점/방향)을 시간별로 반환.
 
     타원체/지형 교차는 하지 않는다 - 지형(DEM)을 가진 외부 서버가 이 광선을 자체
-    정밀 지형모델로 교차시켜 촬영 풋프린트를 계산하는 것을 전제로 한다. 타원체
-    근사만으로 충분하면 /footprint/track(폴리곤까지 이 API가 직접 계산)을 대신 쓴다.
+    정밀 지형모델로 교차시켜 촬영 풋프린트를 계산하는 것을 전제로 작성했음. 
+    타원체 근사만으로 충분하면 /footprint/track(폴리곤까지 이 API가 직접 계산)을 대신 사용가능.
     """
     boresight_body = (req.boresight_x, req.boresight_y, req.boresight_z)
     samples: list[CameraRaySample] = []
@@ -169,8 +168,8 @@ def footprint_track_endpoint(req: CameraRayTrackRequest) -> dict:
     """지정 위성/기간의 실측 자세(HK 텔레메트리)로부터 매 시점 촬영 풋프린트를
     GeoJSON FeatureCollection으로 반환(WGS-84 타원체 근사, 지형 미반영).
 
-    각 시점의 Polygon/Point Feature에 `time`(ISO8601 UTC) 속성이 붙는다. 지형(DEM)
-    반영 정밀 풋프린트가 필요하면 /footprint/rays의 광선을 자체 지형모델과 교차시킬 것.
+    각 시점의 Polygon/Point Feature에 `time`(ISO8601 UTC) 속성 붙음. 
+    지형(DEM)반영 정밀 풋프린트가 필요하면 /footprint/rays의 광선을 자체 지형모델과 교차시킬 것.
     """
     features: list[dict] = []
     for ts_dt, footprint in _compute_footprint_track(req):
@@ -186,7 +185,7 @@ def footprint_track_czml_endpoint(req: CameraRayTrackRequest) -> list:
     """지정 위성/기간의 실측 자세로부터 매 시점 촬영 풋프린트를 CZML로 반환(타원체 근사).
 
     각 시점의 폴리곤/중심점 패킷은 다음 샘플 시각까지만 표시되도록(availability)
-    구성되어, Cesium 타임라인을 재생하면 촬영영역이 시간에 따라 전환된다.
+    구성되어, Cesium 타임라인을 재생하면 촬영영역이 시간에 따라 전환.
     """
     return footprint_track_to_czml(_compute_footprint_track(req), id_prefix="footprint")
 
@@ -214,9 +213,9 @@ def line_track_endpoint(req: LineTrackRequest) -> LineTrackResponse:
     좌/우 지상점(WGS-84 타원체 근사)을 시간별로 반환.
 
     /footprint/track(전체 FOV 사각형 스냅샷)과 달리 along-track 폭을 0으로 취급해,
-    Cesium 뷰어에서 사각뿔 FOV 안에 "지금 스캔 중인 라인" 위치를 표시하는 용도로 쓴다.
-    시점 간격은 HK 텔레메트리 원본 샘플 주기(~1Hz) 그대로다 - 실제 카메라 line_rate
-    수준의 보간은 하지 않는다(LineTrackRequest 참고).
+    Cesium 뷰어에서 사각뿔 FOV 안에 "지금 스캔 중인 라인" 위치를 표시하는 용도로 사용가능.
+    시점 간격은 HK 텔레메트리 원본 샘플 주기(~1Hz) 그대로 - 실제 카메라 line_rate
+    수준의 보간은 반영 안됨(LineTrackRequest 참고).
     """
     samples: list[LineGroundPoint] = []
     for ts_dt, line in _compute_line_track(req):

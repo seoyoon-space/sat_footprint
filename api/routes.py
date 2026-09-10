@@ -37,13 +37,10 @@ def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
 
     try:
         df = loader.load(
-            # HKLoader.load()/_normalize_query_time는 str/datetime을 모두 받으므로 그대로 전달.
-            # (예전에는 .isoformat()을 강제 호출해서, pydantic이 ISO 문자열을 str로 파싱한
-            # 경우 - datetime|str 유니온에서 흔히 벌어짐 - AttributeError로 항상 실패했음)
             start_time=req.start_time,
             end_time=req.end_time,
-            # satellite_id는 위성별 hk1~hk6 테이블 선택에 쓰인다(tbl_obs1a_hk*/tbl_obs1b_hk*) -
-            # None으로 넘기면 항상 O1A 테이블을 조회해버리므로 반드시 실제 값을 전달해야 한다.
+            # satellite_id는 위성별 hk1~hk6 테이블 선택 시 시용(tbl_obs1a_hk*/tbl_obs1b_hk*) -
+            # None으로 넘기면 항상 O1A 테이블을 조회해버리므로 반드시 실제 값을 전달 필요.
             satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
@@ -67,8 +64,8 @@ def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
 @router.post("/mission-hk", response_model=MissionHkResponse)
 def mission_hk_telemetry(req: TelemetryQueryRequest) -> MissionHkResponse:
     """지정 위성/기간의 실측 위치+자세를 DEM 서버 czml_generator.py의 `mission_hk` dict와
-    같은 필드명(camelCase)·컬럼별 배열 형태로 반환한다 - 이름만 맞춘 것이고 값은 이
-    API의 다른 엔드포인트와 동일하게 이미 보정된 최종값이다: `posWrtEci1..3`은 미터,
+    같은 필드명(camelCase)·컬럼별 배열 형태로 반환 - 이름만 맞춘 것이고 값은 이
+    API의 다른 엔드포인트와 동일하게 이미 보정된 최종값: `posWrtEci1..3`은 미터,
     `qbodyWrtEci1..4`는 Body->ECI 회전을 나타내는 scalar-first 쿼터니언(1=x, 2=y, 3=z,
     4=w - w를 4번 자리에 두는 것은 DEM 쪽 필드 순서에 맞춘 것일 뿐, scalar-last라는
     뜻은 아니다).

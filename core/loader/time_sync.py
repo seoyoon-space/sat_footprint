@@ -2,8 +2,7 @@
 분산된 HK 패킷(hk1~hk6)을 공통 타임스탬프 기준으로 동기화/병합.
 
 각 패킷은 송신 주기가 다를 수 있으므로, asof-merge(가장 가까운 이전/이후
-타임스탬프에 매칭)를 사용합니다. 허용 오차(tolerance)를 벗어나면 해당
-필드는 NaN으로 남기고, 이후 보간(interpolate) 옵션으로 채울 수 있습니다.
+타임스탬프에 매칭)를 사용. 허용 오차(tolerance_sec) 넘어가면 Nan 처리
 """
 
 from __future__ import annotations

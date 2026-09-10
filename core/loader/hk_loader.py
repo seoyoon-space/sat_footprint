@@ -228,11 +228,6 @@ class HKLoader:
     def for_satellite(cls, satellite_id: str) -> "HKLoader":
         """
         config/satellites.toml에 등록된 위성별 DB 프로필로 커넥션 생성.
-
-        실제 O1A/O1B는 같은 DB 인스턴스('nstanl')를 공유하고 테이블명만 위성별로
-        다르므로(get_hk_packet_schema 참고), 지금은 두 satellite_id를 같은 접속정보로
-        등록해두면 from_env()와 동일하게 동작한다. 이 메서드는 향후 어떤 위성이 실제로
-        별도 DB 인스턴스를 쓰게 되는 경우를 위한 확장 지점으로 남겨둔다.
         """
         from config import satellite_registry
 
@@ -471,10 +466,6 @@ def extract_attitude_columns(df: pd.DataFrame, verbose: bool = False) -> pd.Data
 
     The standard export columns are:
       timestamp, px, py, pz, vx, vy, vz, q0, q1, q2, q3
-
-    The function attempts multiple heuristics to find position/velocity triplets
-    since different HK tables use different naming conventions (ECI/ECEF/ITRF,
-    suffix/prefix variations, or single-array columns).
     """
     if df.empty:
         return pd.DataFrame(columns=["timestamp", "px", "py", "pz", "vx", "vy", "vz", "q0", "q1", "q2", "q3"])

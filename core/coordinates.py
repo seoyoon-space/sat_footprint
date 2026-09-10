@@ -151,7 +151,7 @@ def _precession_matrix_eci_to_mod(t: float):
     """세차 행렬(ECI/GCRF(J2000 평균 적도/분점) -> MOD(당일 평균 적도/분점)).
 
     IAU 1976 세차각 zeta/theta/z 공식 및 행렬 구성은 Vallado precess.m(opt='80')과 동일.
-    원본은 MOD->ECI 방향으로 구성되므로, 필요한 반대 방향은 전치로 얻는다.
+    원본은 MOD->ECI 방향으로 구성되므로, 필요한 반대 방향은 전치로 get.
     """
     t2 = t * t
     t3 = t2 * t
@@ -205,9 +205,8 @@ def _precession_nutation_for_date(date_key: date):
 
     세차는 약 50"/year(~0.14"/day), 장동의 지배항은 약 17"의 진폭을 18.6년 주기로
     그리므로 하루 내 변화는 <= 약 0.02"/day 수준. 반면 GMST는
-    지구 자전으로 초당 약 15"를 움직이므로 절대 이렇게 캐시하면 안 되고, 항상
-    타임스탬프마다 정확히 재계산한다(_earth_orientation_matrices 참고). 날짜 단위
-    캐싱으로 추가되는 오차(<= 하루치 세차/장동 변화량)는 GMST 자체가 이미 갖고 있는
+    지구 자전으로 초당 약 15"를 움직이므로, 항상 타임스탬프마다 재계산(_earth_orientation_matrices 참고).
+    날짜 단위 캐싱으로 추가되는 오차(<= 하루치 세차/장동 변화량)는 GMST 자체가 이미 갖고 있는
     UT1-UTC 미보정 오차(<= 약 13.5", earth_rotation_angle_rad 참고)보다 훨씬 작아
     전체 정확도에 실질적 영향 없음. 
     """
@@ -232,7 +231,7 @@ def _eci_to_ecef_matrix(utc_datetime: datetime):
     """ECI->ECEF 전체 회전을 나타내는 단일 3x3 행렬 (eci_to_ecef의 행렬 3개 합성).
 
     eci_to_ecef_rotation_quaternion처럼 좌표뿐 아니라 자세(쿼터니언)까지 프레임을
-    바꿔야 하는 경우(예: CZML orientation) 재사용하기 위해 분리했다.
+    바꿔야 하는 경우(예: CZML orientation) 재사용하기 위해 분리함. (모듈로써 따로 사용가능)
     """
     eci_to_mod, mod_to_tod, ast = _earth_orientation_matrices(utc_datetime)
     return matmul(rotation_matrix_3d("z", -ast), matmul(mod_to_tod, eci_to_mod))
@@ -241,10 +240,9 @@ def _eci_to_ecef_matrix(utc_datetime: datetime):
 def eci_to_ecef_rotation_quaternion(utc_datetime: datetime) -> Quaternion:
     """ECI->ECEF 회전을 나타내는 scalar-first 쿼터니언.
 
-    좌표 변환(eci_to_ecef)과 동일한 회전을, 쿼터니언으로 자세를 표현하는 값(예: 위성
-    body 쿼터니언)에 합성하기 위해 제공한다. 예: body->ECI 쿼터니언 q에 이 값을
-    quaternion_multiply(eci_to_ecef_rotation_quaternion(dt), q)로 곱하면 body->ECEF
-    쿼터니언이 된다(quaternion_multiply(q1, q2)는 "q2 먼저 적용 후 q1 적용" 합성 관례,
+    좌표 변환(eci_to_ecef)과 동일한 회전을, 쿼터니언으로 자세를 표현하는 값
+    - 예: body->ECI 쿼터니언 q에 이 값을 quaternion_multiply(eci_to_ecef_rotation_quaternion(dt), q)로 곱하면 
+    body->ECEF 쿼터니언이 됨(quaternion_multiply(q1, q2)는 "q2 먼저 적용 후 q1 적용" 합성 관례,
     test_quaternion_multiply_matches_scipy_composition 참고).
     """
     if utc_datetime.tzinfo is None:
@@ -345,19 +343,7 @@ def build_cesium_track_czml(
     orientation_cols: tuple[str, str, str, str] = ("q_eci2body_1", "q_eci2body_2", "q_eci2body_3", "q_eci2body_4"),
     pointing_col: str | None = "pointing_eci",
 ):
-    """Build a Cesium-friendly CZML packet for a time-varying spacecraft track.
 
-    The output is a list of CZML packets suitable for direct use in Cesium:
-      - document packet
-      - one object packet with `position`/`orientation` time-sampled arrays
-
-    CZML's `orientation.unitQuaternion` is always defined as body-axes -> Earth-FIXED
-    (there is no INERTIAL option for orientation, unlike `position.referenceFrame`), so the
-    input orientation_cols (assumed body->ECI, matching core.coordinates.pointing_vector_from_quaternion's
-    convention) is always rotated into body->ECEF here regardless of `coordinate_frame` -
-    otherwise Cesium would render the wrong attitude except at the rare instant the
-    ECI->ECEF rotation happens to be near-identity.
-    """
     import pandas as pd
 
     if time_col not in df.columns:
@@ -421,7 +407,7 @@ def build_cesium_track_czml(
         packet["position"] = {"epoch": epoch_text, "cartesian": pos_entries}
         if frame == "eci":
             # CZML position의 기본 referenceFrame은 FIXED(ECEF)이므로, ECI 좌표를 그대로
-            # 넘길 때는 INERTIAL임을 명시하지 않으면 Cesium이 지구고정계 좌표로 오해한다.
+            # 넘길 때는 INERTIAL임을 명시하지 않으면 Cesium이 지구고정계 좌표로 오해할수도?
             packet["position"]["referenceFrame"] = "INERTIAL"
     if orientation_entries:
         packet["orientation"] = {"epoch": epoch_text, "unitQuaternion": orientation_entries}

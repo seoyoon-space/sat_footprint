@@ -14,8 +14,7 @@ class TelemetryQueryRequest(BaseModel):
 
 
 class TelemetryRecord(BaseModel):
-    """core/loader/schema_map.py의 canonical 필드명(실제 O1B HK 스키마 기준)과 일치시킨다.
-    (예전 버전은 q_eci2body_1/pos_eci_x 등 실제 DB에 없는 이름을 썼던 버그가 있었음)
+    """core/loader/schema_map.py의 canonical 필드명(실제 O1B HK 스키마 기준)과 일치
     """
 
     model_config = ConfigDict(extra="allow")
@@ -50,9 +49,10 @@ class TelemetryResponse(BaseModel):
 
 class MissionHkResponse(BaseModel):
     """DEM 서버의 czml_generator.py::generate_czml()이 받는 `mission_hk` dict와 같은
-    필드명/배열 형태(컬럼별 배열, camelCase). 값 자체는 이 API의 다른 엔드포인트와
-    동일하게 이미 보정된 최종값이다(위치 m, qbodyWrtEci는 Body->ECI) - generate_czml()이
-    자체적으로 걸던 km->m 변환과 재정렬+conjugate는 이 응답에 대해서는 걸면 안 된다
+    필드명/배열 형태(컬럼별 배열, camelCase). 
+    값 자체는 이 API의 다른 엔드포인트와 동일하게 이미 보정된 최종값
+    (위치 m, qbodyWrtEci는 Body->ECI) - generate_czml()이 자체적으로 걸던 km->m 변환과 
+    재정렬+conjugate는 이 응답에 대해서는 걸면 안됨.
     (README "DEM 서버 연동" 참고).
     """
 
@@ -86,7 +86,7 @@ class CameraRayTrackRequest(BaseModel):
     """실측 텔레메트리(위치/자세) 기반 카메라 광선(ECEF 원점/방향) 조회 요청.
 
     타원체/지형 교차는 하지 않는다 - 지형(DEM)을 가진 외부 서버가 이 광선을 받아
-    자체 정밀 지형모델로 풋프린트를 계산하는 것을 전제로 한다.
+    자체 정밀 지형모델로 풋프린트를 계산하는 것을 전제로 작성함
     """
 
     satellite_id: str = Field(..., description="위성 코드 (예: O1A, E3T, O1B, BSS)")
@@ -122,9 +122,8 @@ class LineTrackRequest(BaseModel):
     좌/우 지상점 조회 요청. along-track(진행 방향) 폭은 0으로 취급 - fov_across_deg
     하나만 받는다(DEM 서버 쪽 SensorConfig와 동일한 단일-FOV 라인센서 모델).
 
-    시점 간격은 HK 텔레메트리 원본 샘플 주기(보통 ~1Hz) 그대로이며, 실제 카메라의
-    line_rate(초당 수백~수천 라인)만큼 보간하지 않는다 - 그 정밀도가 필요하면 DEM
-    서버의 Orekit/Rugged 파이프라인이 담당하는 영역이다.
+    시점 간격은 HK 텔레메트리 원본 샘플 주기(보통 ~1Hz) 그대로이며, 
+    실제 카메라의 line_rate(초당 수백~수천 라인)만큼 보간하진 않음. 
     """
 
     satellite_id: str = Field(..., description="위성 코드 (예: O1A, E3T, O1B, BSS)")
@@ -151,7 +150,7 @@ class LineTrackResponse(BaseModel):
 
 
 class PropagationTrackRequest(BaseModel):
-    """TLE 기반 SGP4 궤도 전파 요청. DB 조회 없이(실측 텔레메트리와 무관) 순수 예측값을 낸다."""
+    """TLE 기반 SGP4 궤도 전파 요청. DB 조회 없이(실측 텔레메트리와 무관) 순수 예측값."""
 
     tle_line1: str = Field(..., description="TLE 1번째 줄 ('1 '로 시작)")
     tle_line2: str = Field(..., description="TLE 2번째 줄 ('2 '로 시작)")
