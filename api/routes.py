@@ -68,11 +68,13 @@ def mission_hk_telemetry(req: TelemetryQueryRequest) -> MissionHkResponse:
 
     `qbodyWrtEci1..4`는 scalar-last(1=x, 2=y, 3=z, 4=w) 순서에 이 프로젝트의 쿼터니언
     "방향반전"은 걸지 않은 값이다 - `core/coordinates.py` 등 이 프로젝트 자신의 계산이
-    쓰는 Body->ECI 방향이 **아니다**. DEM의 실제 sat_footprint 저장소(Orekit/Rugged
-    파이프라인 + 그 CZML 생성기)를 실제 타겟 좌표로 A/B 검증한 결과, 이 방향반전이
-    걸리면 Rugged 지형교차가 타임아웃/메모리 폭주로 깨지고, 안 걸리면 실제 타겟과
-    ~1.8km까지 근접한다는 것이 확인됐다 - 그래서 이 엔드포인트만
-    `invert_quaternion_direction=False`로 로드한다(HKLoader.load 참고).
+    쓰는 Body->ECI 방향이 **아니다**. DEM 서버(sat_footprint)의 Orekit/Rugged 지형교차
+    파이프라인을 실제 타겟 좌표로 A/B 검증한 결과, 이 방향반전이 걸리면 Rugged
+    지형교차가 타임아웃/메모리 폭주로 깨지고, 안 걸리면 실제 타겟과 ~1.8km까지
+    근접한다는 것이 확인됐다 - 자체 좌표계산이 필요한 소비자를 위한 엔드포인트라
+    `invert_quaternion_direction=False`로 로드한다(HKLoader.load 참고). DEM의 CZML
+    시각화 자체는 현재 이 값 대신 `/telemetry/czml`을 직접 쓴다(README "Two calling
+    modes" 참고).
     """
     try:
         loader = _get_loader(req.satellite_id)
