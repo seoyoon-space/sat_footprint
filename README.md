@@ -27,30 +27,31 @@ The loader converts those inputs into UTC epoch seconds for DB queries and norma
 
 ## Two calling modes - don't let this project's coordinate math collide with a Cesium-based host's own
 
-This project can be used two ways, and **which one applies determines whether `core/coordinates.py`
-should run at all**:
+This project supports both, selectable per caller/endpoint - which one applies determines whether
+`core/coordinates.py`'s ECI-to-ECEF composition should run at all for that data:
 
-1. **Standalone mode** - the caller has no coordinate-transform pipeline of its own. This project
-   does the full job: `core/coordinates.py` composes ECI-to-ECEF for both position and attitude and
-   hands back Cesium-ready, `FIXED`-frame CZML. HTTP: `POST /telemetry/czml`. Embedded: call
+1. **Standalone mode** - trust this project's own coordinate computation end-to-end.
+   `core/coordinates.py` composes ECI-to-ECEF for both position and attitude and hands back
+   Cesium-ready, `FIXED`-frame CZML. HTTP: `POST /telemetry/czml`. Embedded: call
    `core/coordinates.py::build_cesium_track_czml()` directly (see
    ["Embedding `core/` directly"](#embedding-core-directly-in-another-project-no-http-no-configpy-required)
-   above).
-2. **Embedded-in-a-Cesium-host mode** - the host already has its own coordinate-transform pipeline
-   built on Cesium/Orekit conventions (e.g. DEM's `sat_footprint` server: `czml_generator.py` keeps
-   position in the ECI/`INERTIAL` reference frame and lets Cesium's own frame handling do the rest;
-   its Java/Orekit/Rugged side does its own ECI-frame processing too). In this mode, **this project
-   must hand over ECI data as-is and must not also run `core/coordinates.py`'s ECI-to-ECEF
-   composition on it** - doing both would either double-transform the same data or hand the host a
-   `FIXED`-frame shape it isn't expecting, either way producing wrong numbers, not just wrong
-   formatting. HTTP: `POST /telemetry/mission-hk` (see below). Embedded: call
+   above). **This is DEM's `sat_footprint` server's current setup** - it has moved off its own
+   `czml_generator.py` coordinate/frame math and trusts this project's computation directly instead.
+2. **Embedded-in-a-Cesium-host mode** - for a caller that *does* want to run its own
+   coordinate-transform pipeline on Cesium/Orekit conventions instead (e.g. a `czml_generator.py`-style
+   generator that keeps position in the ECI/`INERTIAL` reference frame and lets Cesium's own frame
+   handling do the rest, or a Java/Orekit/Rugged pipeline that does its own ECI-frame processing).
+   In this mode, **this project must hand over ECI data as-is and must not also run
+   `core/coordinates.py`'s ECI-to-ECEF composition on it** - doing both would either double-transform
+   the same data or hand the host a `FIXED`-frame shape it isn't expecting, either way producing wrong
+   numbers, not just wrong formatting. HTTP: `POST /telemetry/mission-hk` (see below). Embedded: call
    `HKLoader.load(..., invert_quaternion_direction=False)` and pass the result straight to the
    host's own generator/pipeline - do not route it through `core/coordinates.py` afterward.
 
 Both modes read from the exact same `HKLoader` output - the only difference is which serialization
 path (`/telemetry/czml` vs `/telemetry/mission-hk`, or `build_cesium_track_czml()` vs raw
 `HKLoader.load()`) is used downstream of it, so there is one shared loading/normalization contract
-to maintain, not two.
+to maintain, not two, and a caller can pick either endpoint per request without the two colliding.
 
 ## Getting the code
 
@@ -397,13 +398,17 @@ print(resp.json())
 
 This is the HTTP form of ["embedded-in-a-Cesium-host" mode](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own) above.
 
-**This is the integration point for a consumer with its own CZML generator** (DEM/`sat_footprint`'s
-`czml_generator.py`, which keeps position in the ECI/`INERTIAL` reference frame and lets Cesium
-handle rendering, rather than this project pre-composing ECEF like `/telemetry/czml` does) -
-`core/coordinates.py`'s ECI-to-ECEF composition is deliberately *not* involved here, since
-Cesium/the consumer's own generator already does that work; using `/telemetry/czml` instead would
-duplicate it and produce a different (`FIXED`-frame) shape that doesn't match what such a
-generator expects.
+**This is the integration point for a consumer that wants to run its own Cesium/Orekit-based
+coordinate math instead of trusting this project's** - e.g. a `czml_generator.py`-style CZML
+generator that keeps position in the ECI/`INERTIAL` reference frame and lets Cesium handle
+rendering itself, or a Java/Orekit/Rugged terrain-footprint pipeline that does its own ECI-frame
+processing. `core/coordinates.py`'s ECI-to-ECEF composition is deliberately *not* involved here,
+since that consumer's own pipeline already does that work; using `/telemetry/czml` instead would
+duplicate it and produce a different (`FIXED`-frame) shape that doesn't match what such a pipeline
+expects. (Note: DEM's own CZML *visualization* has since moved off `czml_generator.py`'s coordinate
+math entirely and now trusts this project's `/telemetry/czml`/`core/coordinates.py` directly -
+see "Standalone mode" above - but the field-name/direction/unit contract below still applies to any
+other consumer, e.g. DEM's Java/Orekit/Rugged footprint pipeline, that keeps doing its own math.)
 
 `POST /telemetry/mission-hk` returns the same position/attitude as `/telemetry/query`, but
 shaped as column arrays with the DEM server's own `czml_generator.py` field names
