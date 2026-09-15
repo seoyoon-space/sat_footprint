@@ -1,12 +1,15 @@
 numpy>=1.24
 pandas>=2.0
-
-# HK DB loader (python/hk_loader)
-sqlalchemy>=2.0
-pymysql>=1.1
-pydantic-settings>=2.0
 python-dotenv>=1.0
 
-# DEM tile setup (scripts/setup_dem_tiles.py)
-requests>=2.28
+# mce_db.py/mps_db.py (mission DB access, secrets.toml)
+pymysql>=1.1
+tomli>=2.0; python_version < "3.11"  # tomllib is stdlib from 3.11+; secrets.toml parsing falls back to tomli below that
+
+# DEM tile setup (scripts/setup_dem_aster.py)
 rasterio>=1.3
+
+# attitude-viewer (Flask app)
+flask>=3.0
+requests>=2.31
+openpyxl>=3.1  # /old mirror: reads data/old_server_data.xlsx target-coordinate catalog

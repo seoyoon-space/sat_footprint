@@ -32,7 +32,7 @@ HK 자세 데이터 → Orekit/Rugged → 지상 교점 → Footprint 좌표
 │                           SensorSpec ──▶ LineSensor + LOS       │
 │                           (FOV, pixel)       │                  │
 │                                              ▼                  │
-│                     GLO30TileUpdater ──▶ Rugged.directLocation  │
+│                    ASTGTMTileUpdater ──▶ Rugged.directLocation  │
 │                       (DEM 타일)          (ray-terrain 교점)    │
 │                                              │                  │
 │                                              ▼                  │
@@ -66,15 +66,15 @@ Boresight        Body → ECI        ECI → ECEF       Ray 교점         Footp
    git clone https://gitlab.orekit.org/orekit/orekit-data.git orekit-data-master
    ```
 
-2. **DEM 타일**: GLO-30 기반 바이너리 타일 + `tile_index.json`
-   - Python 스크립트로 다운로드/타일링 후 생성 (별도 저장소 참조)
+2. **DEM 타일**: ASTGTMV003 기반 바이너리 타일 + `tile_index.json`
+   - `python scripts/setup_dem_aster.py` 로 네트워크 서버에서 변환
 
 ## Quick Start
 
 ### 1. Java 빌드
 
 ```bash
-cd java
+cd footprint-backend/java
 mvn compile
 ```
 
@@ -110,24 +110,25 @@ sat_footprint/
 ├── .gitignore
 ├── requirements.txt
 │
-├── python/
-│   └── footprint/
-│       ├── __init__.py
-│       ├── models.py          # 데이터 모델 (SatelliteState, SensorConfig)
-│       ├── io_adapter.py      # HK 데이터 입력 어댑터 (CSV/DataFrame/dict)
-│       └── pipeline.py        # 메인 파이프라인 (Python → Java → 결과)
-│
-├── java/
-│   ├── pom.xml
-│   └── src/main/java/footprint/
-│       ├── Main.java              # CLI 진입점
-│       ├── FootprintCalculator.java  # Rugged 기반 footprint 계산
-│       ├── HkToOrekitConverter.java  # HK → Orekit 타입 변환
-│       ├── AttitudeRecord.java       # 자세 데이터 모델
-│       ├── SensorSpec.java           # 센서 스펙 (FOV, pixel, lineRate)
-│       ├── FootprintResult.java      # 계산 결과 모델
-│       ├── GLO30TileUpdater.java     # DEM 타일 → Rugged 공급
-│       └── TileRecord.java           # 타일 인덱스 레코드
+├── footprint-backend/       # Java(Orekit/Rugged 계산) + Python(래퍼) 한 쌍
+│   ├── python/
+│   │   └── footprint/
+│   │       ├── __init__.py
+│   │       ├── models.py          # 데이터 모델 (SatelliteState, SensorConfig)
+│   │       ├── io_adapter.py      # HK 데이터 입력 어댑터 (CSV/DataFrame/dict)
+│   │       └── pipeline.py        # 메인 파이프라인 (Python → Java → 결과)
+│   │
+│   └── java/
+│       ├── pom.xml
+│       └── src/main/java/footprint/
+│           ├── Main.java              # CLI 진입점
+│           ├── FootprintCalculator.java  # Rugged 기반 footprint 계산
+│           ├── HkToOrekitConverter.java  # HK → Orekit 타입 변환
+│           ├── AttitudeRecord.java       # 자세 데이터 모델
+│           ├── SensorSpec.java           # 센서 스펙 (FOV, pixel, lineRate)
+│           ├── FootprintResult.java      # 계산 결과 모델
+│           ├── ASTGTMTileUpdater.java     # DEM 타일 → Rugged 공급
+│           └── TileRecord.java           # 타일 인덱스 레코드
 │
 └── examples/
     └── example_footprint.py   # 사용 예시

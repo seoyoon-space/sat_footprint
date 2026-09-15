@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.env
+config/satellites.toml
+hk_output/
+.git/
+.github/
+tests/
