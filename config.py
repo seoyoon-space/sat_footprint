@@ -10,9 +10,13 @@ satellites.toml 위치는 SATELLITE_CONFIG_PATH 환경변수로 override 가능
 from __future__ import annotations
 
 import os
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11 (tomllib is stdlib only from 3.11)
+    import tomli as tomllib
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
