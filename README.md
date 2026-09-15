@@ -25,6 +25,33 @@ Users can provide KST or UTC timestamps in friendly formats such as:
 
 The loader converts those inputs into UTC epoch seconds for DB queries and normalizes the merged output to a standard `time` column in the DataFrame.
 
+## Two calling modes - don't let this project's coordinate math collide with a Cesium-based host's own
+
+This project can be used two ways, and **which one applies determines whether `core/coordinates.py`
+should run at all**:
+
+1. **Standalone mode** - the caller has no coordinate-transform pipeline of its own. This project
+   does the full job: `core/coordinates.py` composes ECI-to-ECEF for both position and attitude and
+   hands back Cesium-ready, `FIXED`-frame CZML. HTTP: `POST /telemetry/czml`. Embedded: call
+   `core/coordinates.py::build_cesium_track_czml()` directly (see
+   ["Embedding `core/` directly"](#embedding-core-directly-in-another-project-no-http-no-configpy-required)
+   above).
+2. **Embedded-in-a-Cesium-host mode** - the host already has its own coordinate-transform pipeline
+   built on Cesium/Orekit conventions (e.g. DEM's `sat_footprint` server: `czml_generator.py` keeps
+   position in the ECI/`INERTIAL` reference frame and lets Cesium's own frame handling do the rest;
+   its Java/Orekit/Rugged side does its own ECI-frame processing too). In this mode, **this project
+   must hand over ECI data as-is and must not also run `core/coordinates.py`'s ECI-to-ECEF
+   composition on it** - doing both would either double-transform the same data or hand the host a
+   `FIXED`-frame shape it isn't expecting, either way producing wrong numbers, not just wrong
+   formatting. HTTP: `POST /telemetry/mission-hk` (see below). Embedded: call
+   `HKLoader.load(..., invert_quaternion_direction=False)` and pass the result straight to the
+   host's own generator/pipeline - do not route it through `core/coordinates.py` afterward.
+
+Both modes read from the exact same `HKLoader` output - the only difference is which serialization
+path (`/telemetry/czml` vs `/telemetry/mission-hk`, or `build_cesium_track_czml()` vs raw
+`HKLoader.load()`) is used downstream of it, so there is one shared loading/normalization contract
+to maintain, not two.
+
 ## Getting the code
 
 ```bash
@@ -367,6 +394,8 @@ print(resp.json())
 ```
 
 ### DEM server export format (`mission_hk`)
+
+This is the HTTP form of ["embedded-in-a-Cesium-host" mode](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own) above.
 
 **This is the integration point for a consumer with its own CZML generator** (DEM/`sat_footprint`'s
 `czml_generator.py`, which keeps position in the ECI/`INERTIAL` reference frame and lets Cesium
