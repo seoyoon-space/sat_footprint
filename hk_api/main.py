@@ -1,4 +1,4 @@
-# API 진입 (어플리케이션 선언 및 라우터 등록)# 요청(Request) 및 응답(Response) 데이터 직렬화/검증 (Pydantic)
+# API 진입 (어플리케이션 선언 및 라우터 등록)
 
 from fastapi import FastAPI
 from starlette.middleware.cors import CORSMiddleware

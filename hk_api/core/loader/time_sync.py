@@ -18,6 +18,11 @@ def _ensure_utc(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
         series = pd.to_datetime(df[time_col], utc=True)
 
     df[time_col] = pd.DatetimeIndex(series).as_unit("ns")
+    # HKLoader._fetch_packet()이 이미 SQL ORDER BY로 정렬해서 넘기는 게 보통이라, 이미
+    # 정렬돼 있으면 재정렬을 건너뛴다 - 다만 이 함수는 merge_packets()를 통해 임의의
+    # DataFrame을 받을 수 있는 공개 유틸리티이므로, 정렬이 안 되어 있으면 그대로 정렬한다.
+    if df[time_col].is_monotonic_increasing:
+        return df.reset_index(drop=True)
     return df.sort_values(time_col).reset_index(drop=True)
 
 

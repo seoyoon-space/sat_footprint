@@ -64,15 +64,17 @@ def query_telemetry(req: TelemetryQueryRequest) -> TelemetryResponse:
 @router.post("/mission-hk", response_model=MissionHkResponse)
 def mission_hk_telemetry(req: TelemetryQueryRequest) -> MissionHkResponse:
     """지정 위성/기간의 실측 위치+자세를 DEM 서버 czml_generator.py의 `mission_hk` dict와
-    같은 필드명(camelCase)·컬럼별 배열 형태로 반환 - 이름만 맞춘 것이고 값은 이
-    API의 다른 엔드포인트와 동일하게 이미 보정된 최종값: `posWrtEci1..3`은 미터,
-    `qbodyWrtEci1..4`는 Body->ECI 회전을 나타내는 scalar-first 쿼터니언(1=x, 2=y, 3=z,
-    4=w - w를 4번 자리에 두는 것은 DEM 쪽 필드 순서에 맞춘 것일 뿐, scalar-last라는
-    뜻은 아니다).
+    같은 필드명(camelCase)·컬럼별 배열 형태로 반환. `posWrtEci1..3`은 미터(그대로).
 
-    DEM의 generate_czml()을 그대로 이 응답에 쓰려면, 그 함수가 자체적으로 걸던
-    km->m 변환(`* 1000.0`)과 쿼터니언 재정렬+conjugate를 제거해야 한다 - 이 응답은
-    이미 최종값이라 그 보정을 다시 걸면 값이 어긋난다.
+    `qbodyWrtEci1..4`는 scalar-last(1=x, 2=y, 3=z, 4=w) 순서에 이 프로젝트의 쿼터니언
+    "방향반전"은 걸지 않은 값이다 - `core/coordinates.py` 등 이 프로젝트 자신의 계산이
+    쓰는 Body->ECI 방향이 **아니다**. DEM 서버(sat_footprint)의 Orekit/Rugged 지형교차
+    파이프라인을 실제 타겟 좌표로 A/B 검증한 결과, 이 방향반전이 걸리면 Rugged
+    지형교차가 타임아웃/메모리 폭주로 깨지고, 안 걸리면 실제 타겟과 ~1.8km까지
+    근접한다는 것이 확인됐다 - 자체 좌표계산이 필요한 소비자를 위한 엔드포인트라
+    `invert_quaternion_direction=False`로 로드한다(HKLoader.load 참고). DEM의 CZML
+    시각화 자체는 현재 이 값 대신 `/telemetry/czml`을 직접 쓴다(README "Two calling
+    modes" 참고).
     """
     try:
         loader = _get_loader(req.satellite_id)
@@ -88,6 +90,7 @@ def mission_hk_telemetry(req: TelemetryQueryRequest) -> MissionHkResponse:
             satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
+            invert_quaternion_direction=False,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e

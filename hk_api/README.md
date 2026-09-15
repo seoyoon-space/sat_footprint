@@ -25,6 +25,28 @@ Users can provide KST or UTC timestamps in friendly formats such as:
 
 The loader converts those inputs into UTC epoch seconds for DB queries and normalizes the merged output to a standard `time` column in the DataFrame.
 
+## Two calling modes - don't let this project's coordinate math collide with a Cesium-based host's own
+
+Pick one per caller/endpoint - it decides whether `core/coordinates.py`'s ECI-to-ECEF composition
+should run on that data at all:
+
+- **Standalone mode** - trust this project's coordinate computation end-to-end.
+  `core/coordinates.py` composes ECI-to-ECEF for position and attitude and returns Cesium-ready,
+  `FIXED`-frame CZML. HTTP: `POST /telemetry/czml`. Embedded: call
+  `core/coordinates.py::build_cesium_track_czml()` directly. **This is DEM's `sat_footprint`
+  server's current setup for CZML visualization.**
+- **Embedded-in-a-Cesium-host mode** - for a caller running its own coordinate-transform pipeline
+  on Cesium/Orekit conventions instead (e.g. a `czml_generator.py`-style CZML generator, or a
+  Java/Orekit/Rugged terrain-footprint pipeline). Hand this caller ECI data as-is - running
+  `core/coordinates.py`'s ECI-to-ECEF composition on top of its own would double-transform the data
+  or hand it the wrong frame shape. HTTP: `POST /telemetry/mission-hk`. Embedded: call
+  `HKLoader.load(..., invert_quaternion_direction=False)` and pass the result straight through,
+  without routing it through `core/coordinates.py`.
+
+Both read from the same `HKLoader` output - only the downstream serialization differs (see
+"Quaternion semantics" and "DEM server export format" below for the field-level contract), so a
+caller can pick either endpoint per request without the two colliding.
+
 ## Getting the code
 
 ```bash
@@ -108,25 +130,27 @@ Time semantics:
 - User-facing input: KST or UTC strings are accepted and internally normalized
 - Output DataFrame: standard `time` column in UTC-aware pandas timestamps
 
-Quaternion semantics: the raw DB `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) **and** represents
-an ECI-to-Body rotation - confirmed against the DEM server's own production code
-(`czml_generator.py`, which documents these exact fields as "(ECI-to-Body)" and explicitly
-conjugates them before use). This project's coordinate/footprint code has always expected a
-Body-to-ECI, scalar-first quaternion (the `quaternion_body2eci` naming throughout
-`core/coordinates.py`/`core/geometry/footprint.py`), so `HKLoader._fetch_packet()` applies both
-corrections at the loading boundary - `_reorder_scalar_last_quaternions` (x,y,z,w -> w,x,y,z),
-then `_invert_quaternion_rotation_direction` (conjugate: negate x,y,z, keep w) - so the
-DataFrame values are always Body-to-ECI, scalar-first, even though the column names don't
-change. This applies only to `qbody_wrt_eci1..4`; `q_ecef_wrt_eci1..4`/`cmd_q_body_wrt_eci1..4`
-share the naming pattern but are unconfirmed and unused, so neither correction touches them.
+Quaternion semantics: the raw DB `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) and represents an
+ECI-to-Body rotation. This project's coordinate/footprint code expects Body-to-ECI, scalar-first
+(the `quaternion_body2eci` naming throughout `core/coordinates.py`/`core/geometry/footprint.py`),
+so `HKLoader._fetch_packet()` applies two corrections at the loading boundary:
+`_reorder_scalar_last_quaternions` (x,y,z,w -> w,x,y,z), then
+`_invert_quaternion_rotation_direction` (conjugate: negate x,y,z, keep w). This applies only to
+`qbody_wrt_eci1..4`; `q_ecef_wrt_eci1..4`/`cmd_q_body_wrt_eci1..4` share the naming pattern but are
+unconfirmed and unused, so neither correction touches them.
+
+**The direction flip is this project's own convention, not universal** - DEM's `sat_footprint`
+server (Orekit/Rugged) ported this loader and, via real target-coordinate testing, found it needs
+the *opposite* direction (an Orekit `Rotation` convention difference, not a bug on either side).
+`HKLoader.load(..., invert_quaternion_direction=False)` skips just this flip (reorder and the
+meters conversion below still apply) for that kind of consumer - see
+["Two calling modes"](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own)
+above and "DEM server export format" below.
 
 Position/velocity units: the raw DB `posWrtEci1..3`/`velWrtEci1..3` are kilometers
-(kilometers/second) - also confirmed against `czml_generator.py`, which documents and converts
-the same fields from km. `HKLoader._fetch_packet()` multiplies `pos_wrt_eci1..3`/
-`vel_wrt_eci1..3` by 1000 (`_convert_km_to_m`) at the same loading boundary as the quaternion
-corrections above, so these are always meters/meters-per-second by the time anything else sees
-them - `core/coordinates.py`'s WGS-84 constants and every ellipsoid/footprint calculation are
-written assuming meters throughout.
+(kilometers/second); `HKLoader._fetch_packet()` converts to meters (`_convert_km_to_m`) at the same
+loading boundary, so `core/` and the API always see meters/meters-per-second - `core/coordinates.py`'s
+WGS-84 constants and every ellipsoid/footprint calculation assume meters throughout.
 
 ## Python usage
 
@@ -280,7 +304,7 @@ FastAPI auto-generates these from the code - no separate spec to maintain:
 |---|---|---|
 | `POST /telemetry/query` | Raw merged HK telemetry records | `satellite_id` + time range (real DB) |
 | `POST /telemetry/mission-hk` | Same position/attitude, shaped as the DEM server's `mission_hk` dict (camelCase, column arrays) | `satellite_id` + time range (real DB) |
-| `POST /telemetry/czml` | Satellite ground track + attitude for Cesium | `satellite_id` + time range (real DB) |
+| `POST /telemetry/czml` | Satellite ground track + attitude for Cesium, fully composed into ECEF by this project (`core/coordinates.py`) - Standalone mode, see "Two calling modes" above. Not for a caller running its own coordinate math (use `/telemetry/mission-hk` for that) | `satellite_id` + time range (real DB) |
 | `POST /footprint/rays` | Camera ray (ECEF origin + 5 unit directions), no terrain intersection - for a caller with its own DEM | `satellite_id` + time range (real DB) |
 | `POST /footprint/track` | Footprint polygon per timestamp (GeoJSON), WGS-84 ellipsoid approximation | `satellite_id` + time range (real DB) |
 | `POST /footprint/track/czml` | Same, as CZML scoped by `availability` so Cesium transitions it over time | `satellite_id` + time range (real DB) |
@@ -357,10 +381,12 @@ print(resp.json())
 
 ### DEM server export format (`mission_hk`)
 
-`POST /telemetry/mission-hk` returns the same position/attitude as `/telemetry/query`, but
-shaped as column arrays with the DEM server's own `czml_generator.py` field names
-(`taiSeconds`, `posWrtEci1..3`, `qbodyWrtEci1..4`) instead of this project's canonical
-snake_case names - so a consumer already built against that shape needs no renaming:
+HTTP form of [Embedded-in-a-Cesium-host mode](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own) - for a consumer running its own coordinate math
+(e.g. DEM's Java/Orekit/Rugged terrain-footprint pipeline; DEM's own CZML *visualization* has since
+moved to `/telemetry/czml` instead, see "Two calling modes" above). Returns the same
+position/attitude as `/telemetry/query`, shaped as column arrays with DEM's `czml_generator.py`
+field names (`taiSeconds`, `posWrtEci1..3`, `qbodyWrtEci1..4`) so a consumer already built against
+that shape needs no renaming:
 
 ```bash
 curl -X POST "http://localhost:8000/telemetry/mission-hk" \
@@ -372,13 +398,16 @@ curl -X POST "http://localhost:8000/telemetry/mission-hk" \
   }'
 ```
 
-**The field names match, but the values are this project's final, corrected values, not raw
-DB values** - `posWrtEci1..3` are meters, and `qbodyWrtEci1..4` is a Body-to-ECI quaternion
-(`1=x, 2=y, 3=z, 4=w`; putting `w` in slot 4 only matches the DEM field's positional
-convention, it does not mean scalar-last). If the DEM server's existing
-`czml_generator.py::generate_czml()` is pointed at this endpoint's output, its own internal
-`* 1000.0` (km->m) and quaternion reorder+conjugate must be removed first - re-applying them
-would corrupt already-correct values.
+- `posWrtEci1..3` are **meters** - if feeding `czml_generator.py::generate_czml()` (via
+  `build_mission_hk()`), which still expects km and applies its own `* 1000.0`, divide by 1000
+  first, or keep `sat_footprint/attitude-viewer/app.py::api_czml`'s existing km/m auto-detection
+  guard, which already handles this correctly.
+- `qbodyWrtEci1..4` is scalar-last, **without** this project's Body-to-ECI flip (see "Quaternion
+  semantics" above) - the direction DEM's Orekit/Rugged pipeline needs, so no further
+  conjugate/reorder is needed downstream. This is also why `sat_footprint`'s own
+  `app.py::_load_attitude_or_error()` re-negates `q1,q2,q3` by hand after calling
+  `extract_attitude_columns()` - that manual step becomes unnecessary for a caller that uses
+  `invert_quaternion_direction=False` (or this endpoint) directly instead.
 
 CZML ground track + attitude (loads directly into a `Cesium.CzmlDataSource`):
 

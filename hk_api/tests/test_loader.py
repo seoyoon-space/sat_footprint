@@ -106,6 +106,25 @@ def test_merge_packets_out_of_tolerance_is_nan():
     assert merged.loc[1, "body_rate_x"] != merged.loc[1, "body_rate_x"]  # NaN check
 
 
+def test_merge_packets_sorts_out_of_order_input():
+    """_ensure_utc()는 이미 정렬된 입력(HKLoader._fetch_packet의 SQL ORDER BY 결과)엔
+    재정렬을 건너뛰지만, merge_packets()는 임의의 DataFrame을 받을 수 있는 공개
+    유틸리티이므로 정렬 안 된 입력이 오면 여전히 정렬해야 한다."""
+    hk1 = pd.DataFrame({"time": _ts([3, 1, 0, 2]), "q_eci2body_1": [0.4, 0.2, 0.1, 0.3]})
+    hk2 = pd.DataFrame({"time": _ts([0.1, 1.1, 2.1, 3.1]), "body_rate_x": [1.0, 2.0, 3.0, 4.0]})
+
+    merged = merge_packets(
+        {"hk1": hk1, "hk2": hk2},
+        master_key="hk1",
+        tolerance_sec=1.0,
+        interpolate_gaps=False,
+    )
+
+    assert list(merged["time"]) == sorted(merged["time"])
+    assert list(merged["q_eci2body_1"]) == [0.1, 0.2, 0.3, 0.4]
+    assert list(merged["body_rate_x"]) == [1.0, 2.0, 3.0, 4.0]
+
+
 def test_slice_time_range():
     df = pd.DataFrame({"time": _ts([0, 1, 2, 3, 4]), "value": range(5)})
     sliced = slice_time_range(df, "2026-08-01T00:00:01Z", "2026-08-01T00:00:03Z")
@@ -279,10 +298,13 @@ def test_reorder_scalar_last_quaternions_noop_when_columns_missing():
 
 
 def test_invert_quaternion_rotation_direction_negates_vector_part_only():
-    """DEM 서버 실사용 코드(czml_generator.py)가 qbodyWrtEci를 ECI->Body로 문서화하고
-    실제로 conjugate를 걸어 Body->ECI로 뒤집은 뒤에만 쓰는 것으로 확인됨 - 이 프로젝트의
-    core.coordinates/core.geometry.footprint는 처음부터 Body->ECI 입력을 가정하므로,
-    스칼라부(w, col1)는 그대로 두고 벡터부(x,y,z)만 부호를 뒤집어야 한다."""
+    """이 프로젝트의 core.coordinates/core.geometry.footprint는 처음부터 Body->ECI
+    입력을 가정하므로, 스칼라부(w, col1)는 그대로 두고 벡터부(x,y,z)만 부호를 뒤집어야
+    한다. 이 방향반전은 이 프로젝트 자신의 계산 전용이다 - DEM 서버(sat_footprint)의
+    Orekit/Rugged 파이프라인+CZML 생성기는 실제 타겟 좌표 A/B 검증으로 정반대 방향을
+    기대하는 것으로 확인됐고, 그래서 HKLoader.load(invert_quaternion_direction=False)로
+    이 단계만 건너뛴다(아래 test_reorder_without_invert_matches_dem_expected_direction,
+    api/routes.py::mission_hk_telemetry 참고)."""
     df = pd.DataFrame(
         {
             "qbody_wrt_eci1": [0.9],  # w (이미 scalar-first로 재정렬된 뒤라고 가정)
@@ -362,6 +384,32 @@ def test_raw_db_quaternion_becomes_scalar_first_body_to_eci_end_to_end():
     assert result["qbody_wrt_eci2"].iloc[0] == pytest.approx(-x0)
     assert result["qbody_wrt_eci3"].iloc[0] == pytest.approx(-y0)
     assert result["qbody_wrt_eci4"].iloc[0] == pytest.approx(-z0)
+
+
+def test_reorder_without_invert_matches_dem_expected_direction():
+    """HKLoader.load(..., invert_quaternion_direction=False)가 만드는 값 - 재정렬
+    (scalar-first)까지만 적용하고 방향반전은 건너뛴다. DEM 서버(sat_footprint)의
+    Orekit/Rugged 파이프라인 + 그 CZML 생성기를 실제 타겟 좌표로 A/B 검증한 결과,
+    이 방향(반전 없음)이 걸리면 정상 동작(~1.8km 근접)하고 반전되면 Rugged 지형교차가
+    타임아웃/메모리 폭주로 깨지는 것으로 확인됐다 - 위
+    test_raw_db_quaternion_becomes_scalar_first_body_to_eci_end_to_end(이 프로젝트
+    자신의 core.coordinates가 쓰는 방향)와 정확히 반대 결과여야 한다."""
+    x0, y0, z0, w0 = 0.1, 0.2, 0.3, 0.9
+    df = pd.DataFrame(
+        {
+            "qbody_wrt_eci1": [x0],
+            "qbody_wrt_eci2": [y0],
+            "qbody_wrt_eci3": [z0],
+            "qbody_wrt_eci4": [w0],
+        }
+    )
+
+    result = _reorder_scalar_last_quaternions(df)  # invert 단계를 거치지 않음
+
+    assert result["qbody_wrt_eci1"].iloc[0] == pytest.approx(w0)
+    assert result["qbody_wrt_eci2"].iloc[0] == pytest.approx(x0)
+    assert result["qbody_wrt_eci3"].iloc[0] == pytest.approx(y0)
+    assert result["qbody_wrt_eci4"].iloc[0] == pytest.approx(z0)
 
 
 def test_normalize_query_time_uses_kst_date_input():

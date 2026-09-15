@@ -251,8 +251,7 @@ class HKLoader:
             self._columns_cache[table_name] = columns
             return columns
 
-    def _resolve_time_column(self, table_name: str, preferred: str) -> str:
-        columns = self._get_table_columns(table_name)
+    def _resolve_time_column(self, table_name: str, preferred: str, columns: set[str]) -> str:
         candidates = [
             preferred,
             "timeUtc",
@@ -279,18 +278,20 @@ class HKLoader:
         satellite_id: str | None,
         start_time: int,
         end_time: int,
+        invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
         """단일 hk 테이블에서 지정 구간의 데이터를 조회해 canonical 컬럼명으로 반환."""
-        start_epoch = int(start_time)
-        end_epoch = int(end_time)
+        # load()의 _normalize_query_time()이 이미 int로 정규화해서 넘기므로 재캐스팅 불필요.
+        start_epoch = start_time
+        end_epoch = end_time
 
+        available_columns = self._get_table_columns(spec.table)
         try:
-            time_col = self._resolve_time_column(spec.table, spec.time_col)
+            time_col = self._resolve_time_column(spec.table, spec.time_col, available_columns)
         except ValueError:
             logger.exception("Unable to resolve valid time column for table '%s'", spec.table)
             raise
 
-        available_columns = self._get_table_columns(spec.table)
         mapped_fields = {canonical: db_col for canonical, db_col in spec.fields.items() if db_col in available_columns}
         if not mapped_fields:
             logger.warning("No HK fields were found in table '%s'; available columns: %s", spec.table, sorted(available_columns))
@@ -333,13 +334,8 @@ class HKLoader:
         df = df.rename(columns=rename_map)
         df = df[["time", *mapped_fields.keys()]]
         df = _reorder_scalar_last_quaternions(df)
-        # _invert_quaternion_rotation_direction() is intentionally NOT called here —
-        # verified empirically (two independent checks: the Java/Orekit/Rugged footprint
-        # pipeline, and this module's own eci_to_ecef_rotation_quaternion composition)
-        # that qbody_wrt_eci1..4, after only the scalar-order reorder above, is already
-        # Body->ECI. Applying the inversion flips it into a direction that doesn't even
-        # point at the Earth (ray-ellipsoid intersection fails entirely) — see
-        # attitude-viewer/app.py's _load_attitude_or_error for the verification notes.
+        if invert_quaternion_direction:
+            df = _invert_quaternion_rotation_direction(df)
         df = _convert_km_to_m(df)
         return df
 
@@ -351,6 +347,7 @@ class HKLoader:
         packets: list[str] | None = None,
         merge_tolerance_sec: float = DEFAULT_MERGE_TOLERANCE_SEC,
         interpolate_gaps: bool = True,
+        invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
         """
         start_time, end_time:
@@ -358,11 +355,17 @@ class HKLoader:
             - UTC ISO8601: "2026-08-20T00:00:00Z"
             - Unix epoch seconds: 1787203236
         satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명이 위성마다
-                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 어떤 테이블을 조회할지
-                               고르는 데 쓰인다 - None이면 O1A 스키마가 기본값이다.
-                               (satellite_id_col이 별도로 설정된 경우, 같은 테이블 안에
-                               여러 위성이 섞여 있을 때의 행 필터로도 쓰인다.)
-        packets:               조회할 패킷 부분집합 (기본: 해당 위성 스키마 전체)
+                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 테이블 조회 시 사용
+        invert_quaternion_direction:
+                               기본 True - qbody_wrt_eci1..4를 이 프로젝트 전역(core/coordinates.py,
+                               core/geometry/footprint.py)이 쓰는 Body->ECI 방향으로 뒤집음.
+                               False로 주면 이 방향반전만 건너뛰고 재정렬(scalar-first)·단위
+                               변환(m)은 그대로 적용 - Orekit(Rotation/TimeStampedAngularCoordinates)
+                               기반 소비자(예: sat_footprint의 Java/Rugged 파이프라인, 그 CZML
+                               생성기)는 정확히 이 방향을 기대한다는 것이 실제 타겟 좌표 대조로
+                               확인됐다(반대로 주면 Rugged 지형교차가 타임아웃/메모리 폭주로
+                               깨짐). 이 프로젝트 자신의 계산(coordinates.py 등)에는 절대 쓰지
+                               말 것 - 그쪽은 항상 기본값(True)이 필요하다.
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
@@ -371,7 +374,7 @@ class HKLoader:
 
         def _fetch(name: str) -> pd.DataFrame:
             spec = schema[name]
-            return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
+            return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch, invert_quaternion_direction)
 
         # 패킷별 조회는 서로 독립적인 DB 왕복(SHOW COLUMNS + SELECT)이므로 병렬 실행.
         # executor.map은 입력 순서대로 결과를 반환하므로(완료 순서가 아님) 아래 dict의

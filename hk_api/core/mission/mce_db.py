@@ -146,7 +146,7 @@ def _connect():
 
 
 def get_missions(satellite_id: str, start_iso: str, end_iso: str) -> list[dict]:
-    """지정 위성/기간의 미션 스케줄 원본 행(실제 카메라 ON/OFF 구간 포함)을 MCE DB에서 읽는다."""
+    """지정 위성/기간의 미션 스케줄 원본 행(실제 카메라 ON/OFF 구간 포함)을 MCE DB에서 읽어옴."""
     start_sql = _to_mysql_datetime(start_iso)
     end_sql = _to_mysql_datetime(end_iso)
 
