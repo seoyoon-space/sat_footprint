@@ -296,7 +296,7 @@ def line_ground_points(
     실제 카메라는 진행 방향(along-track)으로는 폭이 없는 한 줄만 그 순간 촬영하고,
     위성이 이동하면서 그 줄들이 쌓여 2D 영상이 된다(DEM 서버 쪽 SensorConfig가
     fov_across_deg 하나만 갖고 along-track FOV가 없는 것과 같은 모델). compute_footprint를
-    fov_y_deg=0으로 호출하는 특수 케이스로 재사용한다 - along-track 폭이 0이면 네
+    fov_y_deg=0으로 호출하는 특수 케이스로 재사용 - along-track 폭이 0이면 네
     모서리가 좌/우 두 쌍으로 겹치므로(corners[0]==corners[3], corners[1]==corners[2]),
     corners[0]/corners[1]이 그대로 이 줄의 좌/우 끝점이 된다. 어느 바디 축이 실제
     across-track(폭 방향)인지는 compute_footprint/camera_rays_ecef와 동일하게
