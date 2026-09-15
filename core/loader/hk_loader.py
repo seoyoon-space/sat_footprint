@@ -279,6 +279,7 @@ class HKLoader:
         satellite_id: str | None,
         start_time: int,
         end_time: int,
+        invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
         """단일 hk 테이블에서 지정 구간의 데이터를 조회해 canonical 컬럼명으로 반환."""
         start_epoch = int(start_time)
@@ -333,7 +334,8 @@ class HKLoader:
         df = df.rename(columns=rename_map)
         df = df[["time", *mapped_fields.keys()]]
         df = _reorder_scalar_last_quaternions(df)
-        df = _invert_quaternion_rotation_direction(df)
+        if invert_quaternion_direction:
+            df = _invert_quaternion_rotation_direction(df)
         df = _convert_km_to_m(df)
         return df
 
@@ -345,6 +347,7 @@ class HKLoader:
         packets: list[str] | None = None,
         merge_tolerance_sec: float = DEFAULT_MERGE_TOLERANCE_SEC,
         interpolate_gaps: bool = True,
+        invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
         """
         start_time, end_time:
@@ -352,11 +355,17 @@ class HKLoader:
             - UTC ISO8601: "2026-08-20T00:00:00Z"
             - Unix epoch seconds: 1787203236
         satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명이 위성마다
-                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 어떤 테이블을 조회할지
-                               고르는 데 쓰인다 - None이면 O1A 스키마가 기본값이다.
-                               (satellite_id_col이 별도로 설정된 경우, 같은 테이블 안에
-                               여러 위성이 섞여 있을 때의 행 필터로도 쓰인다.)
-        packets:               조회할 패킷 부분집합 (기본: 해당 위성 스키마 전체)
+                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 테이블 조회 시 사용
+        invert_quaternion_direction:
+                               기본 True - qbody_wrt_eci1..4를 이 프로젝트 전역(core/coordinates.py,
+                               core/geometry/footprint.py)이 쓰는 Body->ECI 방향으로 뒤집음.
+                               False로 주면 이 방향반전만 건너뛰고 재정렬(scalar-first)·단위
+                               변환(m)은 그대로 적용 - Orekit(Rotation/TimeStampedAngularCoordinates)
+                               기반 소비자(예: sat_footprint의 Java/Rugged 파이프라인, 그 CZML
+                               생성기)는 정확히 이 방향을 기대한다는 것이 실제 타겟 좌표 대조로
+                               확인됐다(반대로 주면 Rugged 지형교차가 타임아웃/메모리 폭주로
+                               깨짐). 이 프로젝트 자신의 계산(coordinates.py 등)에는 절대 쓰지
+                               말 것 - 그쪽은 항상 기본값(True)이 필요하다.
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
@@ -365,7 +374,7 @@ class HKLoader:
 
         def _fetch(name: str) -> pd.DataFrame:
             spec = schema[name]
-            return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch)
+            return self._fetch_packet(spec, satellite_id, start_epoch, end_epoch, invert_quaternion_direction)
 
         # 패킷별 조회는 서로 독립적인 DB 왕복(SHOW COLUMNS + SELECT)이므로 병렬 실행.
         # executor.map은 입력 순서대로 결과를 반환하므로(완료 순서가 아님) 아래 dict의
