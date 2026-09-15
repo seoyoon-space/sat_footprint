@@ -206,7 +206,7 @@ class OpsStatusRequest(BaseModel):
     settling_warn_multiplier: float = Field(2.0, description="미정착 시 WARN/FAIL 경계 배수")
 
     wheel_max_rpm: float | None = Field(
-        None, description="휠 최대 정격 회전속도 [RPM]. None이면 휠 포화 평가를 생략"
+        None, gt=0, description="휠 최대 정격 회전속도 [RPM]. None이면 휠 포화 평가를 생략"
     )
     wheel_warn_ratio: float = Field(0.9, description="휠 포화 WARN 임계 비율")
 

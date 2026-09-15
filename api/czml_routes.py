@@ -10,6 +10,8 @@ from .schemas import TelemetryQueryRequest
 
 router = APIRouter(prefix="/telemetry", tags=["telemetry"], dependencies=[Depends(require_api_key)])
 
+_POS_COLS = ["pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3"]
+
 
 @router.post("/czml")
 def czml_telemetry(
@@ -45,9 +47,18 @@ def czml_telemetry(
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Telemetry load failed: {e}") from e
 
+    if df.empty:
+        raise HTTPException(status_code=404, detail="No telemetry data found in the requested range.")
+
     # core/loader/schema_map.py의 canonical 필드명(실제 O1B HK2 스키마 기준: qbodyWrtEci1..4 -> snake_case)
     q_cols = ["qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"]
-    if all(c in df.columns for c in q_cols) and include_pointing:
+    missing = [c for c in (*_POS_COLS, *q_cols) if c not in df.columns]
+    if missing:
+        # /footprint/*와 같은 기준 - 위치/자세 컬럼이 없으면 빈 CZML을 200으로 조용히
+        # 반환하는 대신 명시적으로 404를 낸다(hk2 패킷만 비어있는 경우 등).
+        raise HTTPException(status_code=404, detail=f"Missing required columns for CZML export: {missing}")
+
+    if include_pointing:  # 위 missing 체크로 q_cols 존재는 이미 보장됨
         # df.apply(axis=1)은 행마다 Series를 새로 만들어 느리므로(core/loader/hk_loader.py의
         # df_to_czml, core/coordinates.py의 build_cesium_track_czml과 동일한 이유로),
         # 원본 dtype을 보존하는 itertuples로 순회.

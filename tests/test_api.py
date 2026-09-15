@@ -140,6 +140,29 @@ def test_telemetry_czml_positions_are_populated_with_real_field_names(fake_loade
     assert len(data_packet["position"]["cartesian"]) == 3 * 4  # 3 rows * (t,x,y,z)
 
 
+def test_telemetry_czml_missing_position_or_attitude_columns_returns_404(monkeypatch):
+    """/footprint/*·/telemetry/mission-hk와 같은 기준 - 위치/자세 컬럼이 없으면
+    (예: hk2 패킷만 비어있는 경우) 빈 CZML을 200으로 조용히 반환하는 대신 404를 내야
+    한다."""
+    df = pd.DataFrame({"time": pd.to_datetime(["2026-08-20T00:00:00Z"], utc=True)})
+
+    class _NoAttitudeLoader:
+        def load(self, **kwargs):
+            return df
+
+    monkeypatch.setattr(czml_routes, "_get_loader", lambda satellite_id: _NoAttitudeLoader())
+
+    resp = client.post(
+        "/telemetry/czml",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+        },
+    )
+    assert resp.status_code == 404
+
+
 def test_footprint_compute_returns_geojson_feature_collection():
     resp = client.post(
         "/footprint/compute",
@@ -441,6 +464,56 @@ def test_ops_status_evaluates_settling_and_saturation(fake_loader):
     assert body["satellite_id"] == "O1A"
     assert body["settling"]["settled"] is True
     assert body["wheel_saturation"]["status"] == "WARN"  # 5900/6000 ratio ~0.983 >= warn_ratio 0.9
+
+
+def test_ops_status_settling_ignores_nan_eigen_err_samples(monkeypatch):
+    """abs(NaN) > tolerance는 항상 False이므로, NaN(결측) 샘플을 걸러내지 않으면
+    '허용오차 이내'로 오판돼 거짓 PASS/settled가 나올 수 있었던 버그 - eigen_err가
+    NaN인 시점은 평가 대상에서 제외해야 한다."""
+    times = pd.to_datetime(
+        ["2026-08-20T00:00:00Z", "2026-08-20T00:00:01Z", "2026-08-20T00:00:02Z"], utc=True
+    )
+    df = pd.DataFrame({"time": times, "eigen_err": [10.0, float("nan"), float("nan")]})
+
+    class _NanLoader:
+        def load(self, **kwargs):
+            return df
+
+    monkeypatch.setattr(validator_routes, "_get_loader", lambda satellite_id: _NanLoader())
+
+    resp = client.post(
+        "/validator/ops-status",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "settling_tolerance_deg": 0.5,
+            "settling_hold_duration_sec": 0.0,
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # 고쳐지기 전엔 NaN 두 번째 샘플(index 1)이 "허용오차 이내"로 오판돼
+    # settled=True/PASS가 나왔다 - NaN을 걸러내면 유효 샘플은 10.0(허용오차 밖) 하나뿐이라
+    # 미정착(FAIL)이어야 한다.
+    assert body["settling"]["settled"] is False
+    assert body["settling"]["status"] == "FAIL"
+
+
+def test_ops_status_rejects_non_positive_wheel_max_rpm(fake_loader):
+    """wheel_max_rpm<=0은 core/validator/ops_rules.py::scan_wheel_saturation가
+    ValueError를 던지는데, 이 호출은 try/except로 감싸여 있지 않아 그대로 500으로
+    새던 버그 - 다른 FOV 필드들처럼 Field(gt=0)으로 요청 단계에서 걸러낸다."""
+    resp = client.post(
+        "/validator/ops-status",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "wheel_max_rpm": 0,
+        },
+    )
+    assert resp.status_code == 422
 
 
 def test_ops_status_without_any_evaluation_criteria_is_pass(fake_loader):

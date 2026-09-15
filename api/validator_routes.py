@@ -81,17 +81,20 @@ def evaluate_ops_status_endpoint(req: OpsStatusRequest) -> OpsStatusResponse:
     if df.empty:
         raise HTTPException(status_code=404, detail="No telemetry data found in the requested range.")
 
-    times = df["time"].apply(lambda t: t.timestamp()).tolist()
-
     settling_obj: SettlingResult | None = None
     wheel_obj: WheelSaturationReport | None = None
 
     if req.settling_tolerance_deg is not None:
         if "eigen_err" not in df.columns:
             raise HTTPException(status_code=404, detail="'eigen_err' column not available for settling evaluation")
+        # NaN(결측) 샘플을 걸러내지 않으면 abs(NaN) > tolerance가 항상 False로 평가돼
+        # 결측 구간이 "허용오차 이내"로 오판되어 거짓 PASS가 나올 수 있다.
+        settling_df = df[["time", "eigen_err"]].dropna()
+        if settling_df.empty:
+            raise HTTPException(status_code=404, detail="No valid (non-NaN) eigen_err samples in the requested range.")
         settling_obj = evaluate_settling_time(
-            times,
-            df["eigen_err"].tolist(),
+            settling_df["time"].apply(lambda t: t.timestamp()).tolist(),
+            settling_df["eigen_err"].tolist(),
             tolerance=req.settling_tolerance_deg,
             hold_duration=req.settling_hold_duration_sec,
             warn_multiplier=req.settling_warn_multiplier,
@@ -101,9 +104,18 @@ def evaluate_ops_status_endpoint(req: OpsStatusRequest) -> OpsStatusResponse:
         wheel_cols = [c for c in WHEEL_SPEED_COLUMNS if c in df.columns]
         if not wheel_cols:
             raise HTTPException(status_code=404, detail="No wheel speed columns available for saturation evaluation")
-        wheel_speeds = {c: df[c].tolist() for c in wheel_cols}
+        # 채널 중 하나라도 NaN인 시점은 통째로 제외 - 위 settling과 같은 이유(NaN 비교는
+        # 항상 False라 결측이 "정상 범위"로 오판됨)이면서, scan_wheel_saturation은 모든
+        # 채널이 같은 길이의 시간축을 공유해야 하므로 채널별로 따로 걸러낼 수 없다.
+        wheel_df = df[["time", *wheel_cols]].dropna()
+        if wheel_df.empty:
+            raise HTTPException(status_code=404, detail="No valid (non-NaN) wheel speed samples in the requested range.")
+        wheel_speeds = {c: wheel_df[c].tolist() for c in wheel_cols}
         wheel_obj = scan_wheel_saturation(
-            times, wheel_speeds, max_rpm=req.wheel_max_rpm, warn_ratio=req.wheel_warn_ratio
+            wheel_df["time"].apply(lambda t: t.timestamp()).tolist(),
+            wheel_speeds,
+            max_rpm=req.wheel_max_rpm,
+            warn_ratio=req.wheel_warn_ratio,
         )
 
     report: OpsStatusReport = evaluate_ops_status(settling=settling_obj, wheel_saturation=wheel_obj)
