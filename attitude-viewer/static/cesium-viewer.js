@@ -631,6 +631,18 @@
       }
 
       function eciDirToEcef(eciDir, time) {
+        // bodyToEci()'s name/output only means "ECI" when the CZML orientation
+        // packet itself is body->ECI (coord_model=cesium — see app.py/api_czml).
+        // Under coord_model=hkapi, mission_hk's quaternion is hk_api's own
+        // body->ECEF composite (its /telemetry/czml always composes orientation
+        // to Earth-fixed, regardless of the position-only coordinate_frame param —
+        // see hk_api/core/coordinates.py's build_cesium_track_czml), so the
+        // direction is already ECEF here — applying ICRF->Fixed again would
+        // double-rotate it (this is the same mistake caught earlier when
+        // comparing coord models directly against hk_api's /telemetry/czml).
+        if (window.APP_COORD_MODEL === 'hkapi') {
+          return Cesium.Cartesian3.normalize(eciDir, new Cesium.Cartesian3());
+        }
         var m = Cesium.Transforms.computeIcrfToFixedMatrix(time, new Cesium.Matrix3());
         if (!m) return null;
         return Cesium.Cartesian3.normalize(
@@ -1180,6 +1192,7 @@
     if (opts.start) params.set('start', opts.start);
     if (opts.end) params.set('end', opts.end);
     params.set('satellite', opts.satellite || window.APP_SATELLITE || 'O1A');
+    params.set('coord_model', opts.coord_model || window.APP_COORD_MODEL || 'cesium');
 
     var qs = params.toString();
     var url = (window.APP_BASE_PATH || '') + '/api/czml' + (qs ? ('?' + qs) : '');

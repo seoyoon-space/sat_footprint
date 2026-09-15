@@ -333,7 +333,13 @@ class HKLoader:
         df = df.rename(columns=rename_map)
         df = df[["time", *mapped_fields.keys()]]
         df = _reorder_scalar_last_quaternions(df)
-        df = _invert_quaternion_rotation_direction(df)
+        # _invert_quaternion_rotation_direction() is intentionally NOT called here —
+        # verified empirically (two independent checks: the Java/Orekit/Rugged footprint
+        # pipeline, and this module's own eci_to_ecef_rotation_quaternion composition)
+        # that qbody_wrt_eci1..4, after only the scalar-order reorder above, is already
+        # Body->ECI. Applying the inversion flips it into a direction that doesn't even
+        # point at the Earth (ray-ellipsoid intersection fails entirely) — see
+        # attitude-viewer/app.py's _load_attitude_or_error for the verification notes.
         df = _convert_km_to_m(df)
         return df
 

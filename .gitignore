@@ -1,5 +1,5 @@
 # Java
-java/target/
+footprint-backend/java/target/
 *.class
 *.jar
 
@@ -29,6 +29,10 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local dev server logs
+attitude-viewer/_server.log
+*.log
 
 # Data (large files - not tracked). "data/*" not "data/" so the !negation below
 # can still reach inside it — git won't descend into a wholesale-ignored directory.

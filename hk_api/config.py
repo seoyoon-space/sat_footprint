@@ -10,10 +10,7 @@ satellites.toml 위치는 SATELLITE_CONFIG_PATH 환경변수로 override 가능
 from __future__ import annotations
 
 import os
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +49,20 @@ class Settings(BaseSettings):
 
     satellite_config_path: str = "config/satellites.toml"
 
+    # 설정 시 /telemetry, /footprint, /validator 라우터가 X-API-Key 헤더를 요구함.
+    # 미설정(None)이면 인증을 건너뜀 - 로컬 개발용 기본값이며, 운영 배포 시 반드시 설정할 것.
+    api_key: str | None = None
+
+    # 브라우저에서 이 API를 직접 fetch하는 프론트엔드(예: Cesium 기반 시각화 페이지)가
+    # 있다면 그 origin을 쉼표로 구분해 등록. 미설정(빈 문자열)이면 CORS 미들웨어 자체를
+    # 추가하지 않아 모든 브라우저 cross-origin 요청이 차단됨(서버-서버 호출은 영향 없음).
+    # 예: CORS_ALLOWED_ORIGINS=https://dem.example.com,http://localhost:5173
+    cors_allowed_origins: str = ""
+
+    @property
+    def cors_allowed_origins_list(self) -> list[str]:
+        return [origin.strip() for origin in self.cors_allowed_origins.split(",") if origin.strip()]
+
     mysql_host: str | None = None
     mysql_port: int = 3306
     mysql_user: str | None = None
@@ -59,6 +70,14 @@ class Settings(BaseSettings):
     mysql_db: str | None = None
     mysql_schema: str | None = None
     mysql_connection_url: str | None = None
+
+    # MCE(미션 스케줄링) 서버 DB - HK DB(nstanl)와는 별개의 DB. core/mission/mce_db.py가
+    # 미션의 실제 카메라 ON/OFF 구간(scanStart/camStart/camEnd)을 계산하는 데 사용.
+    mce_db_host: str | None = None
+    mce_db_port: int = 3306
+    mce_db_user: str | None = None
+    mce_db_password: str | None = None
+    mce_db_name: str | None = None
 
 
 settings = Settings()
@@ -152,3 +171,34 @@ class SatelliteRegistry:
 
 
 satellite_registry = SatelliteRegistry()
+
+
+@dataclass(frozen=True)
+class MceDbConfig:
+    db_host: str
+    db_port: int
+    db_user: str
+    db_password: str
+    db_name: str
+
+
+def get_mce_db_config() -> MceDbConfig:
+    """MCE_DB_* 환경변수로부터 MCE(미션 스케줄링) DB 접속 설정을 만든다.
+
+    HK DB(MYSQL_*)와는 완전히 별개의 DB/서버다 - core/mission/mce_db.py가 미션의 실제
+    카메라 ON/OFF 구간을 계산하려면 이 DB의 TB_Selected_Mission_Schedule 테이블을
+    읽어야 하는데, 그 접속정보는 HK DB 접속정보로 대신할 수 없다.
+    """
+    host = settings.mce_db_host or _env_first("MCE_DB_HOST")
+    user = settings.mce_db_user or _env_first("MCE_DB_USER")
+    password = settings.mce_db_password if settings.mce_db_password is not None else _env_first("MCE_DB_PASSWORD")
+    db_name = settings.mce_db_name or _env_first("MCE_DB_NAME")
+    port = settings.mce_db_port or int(_env_first("MCE_DB_PORT") or 3306)
+
+    if not host or not user or not db_name:
+        raise ValueError(
+            "MCE DB env is incomplete. Set MCE_DB_HOST, MCE_DB_USER, MCE_DB_NAME "
+            "(and MCE_DB_PASSWORD, MCE_DB_PORT if needed) in .env."
+        )
+
+    return MceDbConfig(db_host=host, db_port=port, db_user=user, db_password=password or "", db_name=db_name)
