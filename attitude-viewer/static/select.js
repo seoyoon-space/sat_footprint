@@ -17,7 +17,8 @@
   function apiUrl(path) { return (window.APP_BASE_PATH || '') + path; }
 
   function goToViewer(satId) {
-    window.location.href = apiUrl('/viewer?satellite=' + encodeURIComponent(satId));
+    var base = window.APP_OLD_SERVER ? '/old/viewer' : '/viewer';
+    window.location.href = apiUrl(base + '?satellite=' + encodeURIComponent(satId));
   }
 
   function renderCards(satellites) {

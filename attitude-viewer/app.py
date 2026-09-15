@@ -21,7 +21,9 @@ Query parameters for /api/czml:
     show_fov — show FOV cone (true/false), default: true
 """
 
+import json
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -42,6 +44,7 @@ from core.loader.hk_loader import HKLoader, extract_attitude_columns
 
 import ep_client
 import mce_db
+import mps_db
 from footprint.dem_tiles import ensure_dem_tiles
 from footprint.io_adapter import from_dataframe, find_gap_in_range
 from footprint.pipeline import PipelineConfig, compute_footprint_to_dataframe
@@ -107,6 +110,10 @@ OREKIT_DATA_PATH = PROJECT_ROOT / "data" / "orekit-data-master"
 SENSOR_CALIBRATION_PATH = PROJECT_ROOT / "data" / "sensor_calibration.json"
 DEM_BBOX_BUFFER_DEG = 3.0
 
+# 실시간 진행률 표시용 — Java가 계산 도중 {"done":N,"total":M}을 이 디렉토리 밑에 job_id별로
+# 써주고, /api/footprint/progress가 그 파일을 폴링해서 읽는다 (api_footprint_compute 참고).
+PROGRESS_DIR = PROJECT_ROOT / "data" / "progress"
+
 
 def _load_attitude_or_error(satellite, start, end):
     """HK 텔레메트리를 로드하고 자세 컬럼을 추출.
@@ -130,13 +137,26 @@ def _load_attitude_or_error(satellite, start, end):
     except ValueError as exc:
         return None, f"자세 데이터 추출 실패: {exc}"
 
+    # core.loader.hk_loader (doeun-space에서 가져온 버전)가 _fetch_packet() 단계에서
+    # qbody_wrt_eci1..4를 ECI->Body에서 Body->ECI로 미리 뒤집어 내보낸다 — 근데 우리
+    # Java/Rugged footprint 파이프라인은 뒤집지 않은 원본 방향을 받아야 정상 동작하는
+    # 것으로 실측 확인됨(A/B 테스트: 뒤집으면 Rugged DEM 교차 계산이 300초+ 타임아웃/
+    # 메모리 폭주로 깨짐, 안 뒤집으면 실제 타겟 좌표와 ~1.8km까지 근접). 그래서 로더가
+    # 뒤집어 준 걸 여기서 한 번 더 뒤집어(벡터부 x,y,z만 부호 반전, 스칼라부 q0=w는 유지)
+    # 원래(정확한) 방향으로 되돌린다 — CZML 경로/footprint 경로 둘 다 이 att를 그대로
+    # 쓰므로 여기 한 곳에서만 보정하면 충분하다.
+    att = att.copy()
+    att["q1"] = -att["q1"]
+    att["q2"] = -att["q2"]
+    att["q3"] = -att["q3"]
+
     return att, None
 
 
 @app.get("/")
 def select():
     """첫 화면: 지구 위에 O1A/O1B가 도는 모습을 보여주고 위성을 선택하게 하는 랜딩 페이지."""
-    return render_template("select.html", satellites=SELECTABLE_SATELLITES)
+    return render_template("select.html", satellites=SELECTABLE_SATELLITES, old=False)
 
 
 @app.get("/viewer")
@@ -148,12 +168,47 @@ def index():
         "index.html",
         satellite=satellite,
         hk_enabled=satellite in HK_ENABLED_SATELLITES,
+        old=False,
+    )
+
+
+# ── /old — 구버전 mission planning schedule log(tbl_mps_mission_sch) 테스트/비교용 미러 ──
+# 페이지·JS는 위 라우트들과 완전히 동일하고, 미션 조회만 mps_db(구버전 DB)로 간다
+# (window.APP_OLD_SERVER 플래그로 sidebar.js가 /api/ep/missions에 old=1을 붙여 호출).
+@app.get("/old")
+def select_old():
+    return render_template("select.html", satellites=SELECTABLE_SATELLITES, old=True)
+
+
+@app.get("/old/viewer")
+def index_old():
+    satellite = (request.args.get("satellite") or "O1A").upper()
+    if satellite not in SELECTABLE_SATELLITES:
+        satellite = "O1A"
+    return render_template(
+        "index.html",
+        satellite=satellite,
+        hk_enabled=satellite in HK_ENABLED_SATELLITES,
+        old=True,
     )
 
 
 @app.get("/cesium-token")
 def cesium_token():
     return jsonify({"token": CESIUM_TOKEN})
+
+
+@app.get("/api/sensor-calibration/<satellite_id>")
+def api_sensor_calibration(satellite_id):
+    """3D 뷰어(cesium-viewer.js)의 FOV가 FootprintCalculator.java(SensorCalibration.java가
+    읽는 것과 동일한 파일)와 같은 EOC 마운팅 보정 벡터를 쓸 수 있도록 노출."""
+    satellite = satellite_id.upper()
+    try:
+        calibration = json.loads(SENSOR_CALIBRATION_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        calibration = {}
+    vector = calibration.get(satellite, {}).get("eoc_misalignment_unit_vector", [0.0, 0.0, 0.0])
+    return jsonify({"eoc_misalignment_unit_vector": vector})
 
 
 @app.get("/api/tle/<satellite_id>")
@@ -190,12 +245,12 @@ def api_czml():
     if abs(pos_km[0, 0]) > 100_000:
         pos_km = pos_km / 1000.0
 
-    # extract_attitude_columns outputs scalar-first: q0=w, q1=x, q2=y, q3=z
-    # Our HK quaternion is body->ECI, but czml_generator expects ECI->body
-    # (it conjugates internally to get body->ECI for Cesium).
-    # Pre-conjugate: negate x,y,z to convert body->ECI to ECI->body.
+    # extract_attitude_columns outputs scalar-first: q0=w, q1=x, q2=y, q3=z.
+    # Reindex to scalar-last (x,y,z,w) for build_mission_hk/czml_generator — no sign
+    # flip needed (verified empirically: an actual ECI<->Body flip here breaks the
+    # Java/Rugged footprint pipeline outright, confirming our stored quaternion is
+    # already in the direction both consumers expect).
     q_scalar_last = att[["q1", "q2", "q3", "q0"]].values.astype(float)
-    q_scalar_last[:, :3] *= -1
 
     mission_hk = build_mission_hk(timestamps_unix, pos_km, q_scalar_last)
 
@@ -263,8 +318,12 @@ def api_ep_missions():
     now = datetime.now(timezone.utc)
     start = request.args.get("start") or f"{now.year - 1}-01-01T00:00:00Z"
     end = request.args.get("end") or now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    use_old = request.args.get("old") == "1"
     try:
-        missions = mce_db.get_missions(satellite, start, end)
+        if use_old:
+            missions = mps_db.get_missions(satellite, start, end)
+        else:
+            missions = mce_db.get_missions(satellite, start, end)
     except Exception as exc:
         return jsonify({"missions": [], "error": f"mission DB 연결 실패: {exc}"}), 502
     return jsonify({"missions": missions})
@@ -291,6 +350,8 @@ def api_footprint_compute():
         target_lat/lon       확인할 지점 좌표
         target_name          지점 이름 (표시용)
         satellite            위성 ID (기본 O1A; HK_ENABLED_SATELLITES에 등록된 위성만 지원)
+        eoc_correction       "false"면 sensor_calibration.json의 EOC 마운팅 보정을 끄고
+                             계산 (검증용 A/B 비교). 생략/그 외 값은 항상 적용(기본 on).
     """
     import pandas as pd
 
@@ -306,9 +367,18 @@ def api_footprint_compute():
     target_lon = request.args.get("target_lon", type=float)
     target_name = request.args.get("target_name", "TARGET")
     satellite = (request.args.get("satellite") or "O1A").upper()
+    job_id = request.args.get("job_id")
+    # 검증용 on/off 스위치 — sensor_calibration.json의 EOC 마운팅 보정을 끄고 계산해서
+    # 보정 전/후를 비교해볼 수 있게 함. 기본값 on(생략 시 true).
+    eoc_correction = (request.args.get("eoc_correction", "true").lower() != "false")
 
     if not start or not end or target_lat is None or target_lon is None:
         return jsonify({"lines": [], "error": "start/end/target_lat/target_lon이 필요합니다."}), 400
+
+    # job_id는 파일 경로에 그대로 쓰이므로(진행률 파일명) path traversal 방지용으로
+    # 영숫자/-/_ 만 허용 — 프론트가 만드는 값이라 정상적으로는 항상 이 형태.
+    if job_id is not None and not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id):
+        job_id = None
 
     if satellite not in HK_ENABLED_SATELLITES:
         return jsonify({"lines": [], "error": f"{satellite}는 아직 HK DB 연동이 없습니다 (지원: {', '.join(sorted(HK_ENABLED_SATELLITES))})."}), 400
@@ -356,13 +426,17 @@ def api_footprint_compute():
         java_project_dir=str(JAVA_PROJECT_DIR),
         tile_index_path=str(TILE_INDEX_PATH),
         orekit_data_path=str(OREKIT_DATA_PATH),
-        sensor_calibration_path=str(SENSOR_CALIBRATION_PATH),
+        sensor_calibration_path=str(SENSOR_CALIBRATION_PATH) if eoc_correction else None,
     )
 
     # %f(마이크로초) 포함 — pipeline._default_line_step()가 이 문자열을 다시 파싱해
     # 창 길이를 계산하므로, 초 단위로 잘라버리면 line_step 계산이 부정확해진다.
     start_utc = line_start_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
     end_utc = line_end_dt.strftime("%Y-%m-%dT%H:%M:%S.%f")
+
+    progress_path = (PROGRESS_DIR / f"{job_id}.json") if job_id else None
+    if progress_path:
+        PROGRESS_DIR.mkdir(parents=True, exist_ok=True)
 
     try:
         # line_step is left unset — compute_footprint() auto-scales it to the
@@ -371,11 +445,16 @@ def api_footprint_compute():
         result_df = compute_footprint_to_dataframe(
             states, config, start_utc=start_utc, end_utc=end_utc,
             satellite_id=satellite,
+            progress_json_path=str(progress_path) if progress_path else None,
         )
     except RuntimeError as exc:
         return jsonify({"lines": [], "error": str(exc)}), 500
     except subprocess.TimeoutExpired:
         return jsonify({"lines": [], "error": "Footprint 계산이 시간 초과됐습니다 (5분). 구간을 좁혀서 다시 시도해주세요."}), 504
+    finally:
+        # 계산이 끝났으니(성공/실패 무관) 더 이상 폴링할 필요 없는 진행률 파일을 치운다.
+        if progress_path:
+            progress_path.unlink(missing_ok=True)
 
     geojson_df = None
     if geojson_start and geojson_end and result_df is not None and not result_df.empty:
@@ -396,7 +475,32 @@ def api_footprint_compute():
     response = footprint_dataframe_to_response(result_df, target, geojson_df=geojson_df)
     response["geojson_capture"] = footprint_to_geojson(capture_df, target) if capture_df is not None else None
     response["dem"] = dem_info
+    response["eoc_correction"] = eoc_correction
     return jsonify(response)
+
+
+@app.get("/api/footprint/progress")
+def api_footprint_progress():
+    """/api/footprint/compute가 같은 job_id로 진행 중인 계산의 실제 진행률을 반환.
+
+    서버가 threaded=True라 이 요청은 블로킹 중인 compute 요청과 동시에 처리된다.
+    파일이 아직 없으면(계산 시작 전이거나 progress_json_path 없이 호출됐거나) 또는
+    이미 끝나서 지워졌으면 done/total 둘 다 0 — 프론트는 이걸 "아직 알 수 없음"으로
+    다루고 fake-progress로 폴백한다.
+    """
+    job_id = request.args.get("job_id")
+    if not job_id or not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", job_id):
+        return jsonify({"done": 0, "total": 0})
+
+    progress_path = PROGRESS_DIR / f"{job_id}.json"
+    try:
+        with open(progress_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify({"done": int(data.get("done", 0)), "total": int(data.get("total", 0))})
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        # 파일이 없거나(아직 안 씀/이미 정리됨), Java가 write 중간에 읽혔거나(원자적
+        # rename이라 사실상 안 생기지만 방어적으로) — 그냥 "아직 모름"으로 처리.
+        return jsonify({"done": 0, "total": 0})
 
 
 if __name__ == "__main__":

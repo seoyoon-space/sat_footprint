@@ -107,6 +107,11 @@ html,body{height:100%;background:#050505;color:#ccc;font-family:'Segoe UI',syste
 }
 .selected-name{font-size:13.2px;color:#DDD;font-weight:700}
 .selected-meta{font-size:11.9px;color:#ccc;font-variant-numeric:tabular-nums;line-height:1.5}
+.sidebar-toggle{
+  display:flex;align-items:center;gap:6px;cursor:pointer;
+  font-size:10.8px;color:#bbb;user-select:none;
+}
+.sidebar-toggle input{accent-color:#00e5ff;cursor:pointer}
 .selected-actions{display:flex;flex-direction:column;gap:6px}
 .selected-status{font-size:9.9px;color:#00e5ff;min-height:12px}
 .selected-status.error{color:#ff5a5a}
@@ -277,6 +282,14 @@ html,body{height:100%;background:#050505;color:#ccc;font-family:'Segoe UI',syste
 }
 .fov-btn:hover{color:#AAA;border-color:#333;background:#111}
 .fov-btn.active{color:#DDD;border-color:#333;background:#111}
+.band-toggle-row{display:flex;flex-direction:column;gap:4px}
+.band-toggle-item{
+  display:flex;align-items:center;gap:6px;cursor:pointer;
+  font-size:10px;color:#999;user-select:none;
+}
+.band-toggle-item input{accent-color:#888;cursor:pointer;margin:0}
+.band-toggle-item:hover{color:#DDD}
+.band-swatch{width:9px;height:9px;border-radius:2px;flex-shrink:0}
 
 /* ── Header back-link (viewer page → satellite select) ─── */
 #header .back-link{
@@ -317,6 +330,12 @@ html,body{height:100%;background:#050505;color:#ccc;font-family:'Segoe UI',syste
 }
 #select-cards-header .title{
   font-size:17px;font-weight:700;letter-spacing:.1em;color:#DDD;text-transform:uppercase;
+}
+.old-server-badge{
+  display:inline-block;align-self:flex-start;font-size:10px;font-weight:700;
+  letter-spacing:.08em;color:#ffa726;background:rgba(255,167,38,.12);
+  border:1px solid rgba(255,167,38,.4);border-radius:3px;padding:3px 7px;
+  position:relative;top:8px;
 }
 #select-cards-list{
   flex:1;display:flex;flex-direction:column;gap:20px;justify-content:center;

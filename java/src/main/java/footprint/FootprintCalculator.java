@@ -37,6 +37,10 @@ import java.util.List;
 public class FootprintCalculator {
 
     private final Rugged rugged;
+    // DEM 유무에 따른 오차를 비교하기 위한 두 번째 Rugged 인스턴스 — 같은 LOS/궤도/자세를
+    // 쓰되 지형을 무시하고 WGS84 타원체로만 교차시킨다 (AlgorithmId.IGNORE_DEM_USE_ELLIPSOID).
+    // compute()의 기본 경로에는 영향 없음 — computeFlat()/compute(line, boolean)에서만 쓰인다.
+    private final Rugged ruggedFlat;
     private final LineSensor lineSensor;
 
     public FootprintCalculator(String tileIndexJsonPath, SensorSpec sensor,
@@ -87,6 +91,17 @@ public class FootprintCalculator {
                                satelliteQList, 8, AngularDerivativesFilter.USE_R)
                 .addLineSensor(lineSensor)
                 .build();
+
+        // 지형 무시(WGS84 타원체 전용) 버전 — DEM 결합 효과 비교용.
+        this.ruggedFlat = new RuggedBuilder()
+                .setAlgorithm(AlgorithmId.IGNORE_DEM_USE_ELLIPSOID)
+                .setEllipsoid(EllipsoidId.WGS84, BodyRotatingFrameId.ITRF)
+                .setTimeSpan(startDate, stopDate, 0.1, 1.0)
+                .setTrajectory(InertialFrameId.EME2000,
+                               satellitePVList, 6, CartesianDerivativesFilter.USE_PV,
+                               satelliteQList, 8, AngularDerivativesFilter.USE_R)
+                .addLineSensor(lineSensor)
+                .build();
     }
 
     /**
@@ -103,6 +118,25 @@ public class FootprintCalculator {
 
         GeodeticPoint leftPoint = rugged.directLocation(lineDate, position, losLeft);
         GeodeticPoint rightPoint = rugged.directLocation(lineDate, position, losRight);
+
+        return new FootprintResult(lineDate, leftPoint, rightPoint);
+    }
+
+    /**
+     * compute()와 동일하지만 DEM을 무시하고 WGS84 타원체와만 교차시킨다 — DEM 결합 유무에
+     * 따른 오차 비교용 (예: CompareMain).
+     */
+    public FootprintResult computeFlat(int line) {
+        int firstPixel = 0;
+        int lastPixel = lineSensor.getNbPixels() - 1;
+
+        AbsoluteDate lineDate = lineSensor.getDate(line);
+        Vector3D position = lineSensor.getPosition();
+        Vector3D losLeft = lineSensor.getLOS(lineDate, firstPixel);
+        Vector3D losRight = lineSensor.getLOS(lineDate, lastPixel);
+
+        GeodeticPoint leftPoint = ruggedFlat.directLocation(lineDate, position, losLeft);
+        GeodeticPoint rightPoint = ruggedFlat.directLocation(lineDate, position, losRight);
 
         return new FootprintResult(lineDate, leftPoint, rightPoint);
     }

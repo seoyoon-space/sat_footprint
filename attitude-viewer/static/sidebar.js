@@ -81,6 +81,7 @@
     if (window.hkCesium) {
       window.hkCesium.flyTo(selected.lat, selected.lon, 2500000);
       window.hkCesium.setTarget(selected.lat, selected.lon, selected.name);
+      window.hkCesium.setFootprintLines(null); // 이전 미션의 라인이 새 AOI 위에 남지 않게
     }
   }
 
@@ -114,6 +115,9 @@
     var endVal = $('mission-end-date') && $('mission-end-date').value;
     if (startVal) params.set('start', startVal + 'T00:00:00Z');
     if (endVal) params.set('end', endVal + 'T23:59:59Z');
+    // /old mirror: same page/JS, just pointed at the legacy mission DB (mps_db.py)
+    // instead of the current one (mce_db.py) — see app.py's /old routes.
+    if (window.APP_OLD_SERVER) params.set('old', '1');
     fetch(apiUrl('/api/ep/missions?' + params.toString()))
       .then(function (r) { return r.json(); })
       .then(function (data) {
@@ -241,6 +245,7 @@
     if (window.hkCesium) {
       window.hkCesium.flyTo(lat, lon, 1200000);
       window.hkCesium.setTarget(lat, lon, markerName);
+      window.hkCesium.setFootprintLines(null); // 이전 미션의 라인이 새로 고른 미션 위에 남지 않게
     }
   }
 
@@ -312,7 +317,8 @@
       if (!selected || selected.type !== 'mission') return;
       setStatus('궤도/Footprint 계산 중... (DEM/Java 파이프라인, 수십 초 소요될 수 있음)');
       if (window.hkCesium) window.hkCesium.setPlaying(false);
-      startFakeProgress();
+      var jobId = 'job_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 10);
+      startRealProgress(jobId);
 
       // start/end (padded ±3min) is only needed so Orekit has enough HK samples to fit
       // the orbit — but drawing the whole padded window as "the footprint" makes the
@@ -361,6 +367,9 @@
         target_lat: selected.lat,
         target_lon: selected.lon,
         satellite: selected.satellite || currentSatellite(),
+        job_id: jobId,
+        // 체크 해제 시 sensor_calibration.json의 EOC 마운팅 보정을 끄고 계산 (검증용).
+        eoc_correction: ($('chk-eoc-correction') && !$('chk-eoc-correction').checked) ? 'false' : 'true',
       });
       if (captureStart && captureEnd) {
         params.set('capture_start', captureStart);
@@ -379,11 +388,12 @@
       Promise.all([orbitPromise, footprintPromise])
         .then(function (results) {
           var data = results[1];
-          stopFakeProgress(!data.error);
+          stopProgress(!data.error);
           if (data.error) {
             setStatus(data.error, true);
           } else {
-            setStatus('완료 — 궤도 로드 + Footprint 계산 (' + data.sampled + '/' + data.total + ' lines).');
+            setStatus('완료 — 궤도 로드 + Footprint 계산 (' + data.sampled + '/' + data.total + ' lines, EOC 보정 ' +
+              (data.eoc_correction ? 'ON' : 'OFF') + ').');
           }
           // Download the real camera ON~OFF window (purple) when available — it's
           // the actual captured area, not just the eventStart~eventEnd pass window
@@ -395,40 +405,69 @@
           // downloadable, instead of staying visually identical to its disabled state.
           $('btn-download-geojson').classList.toggle('primary', !!lastGeojson);
           if (window.map2d) window.map2d.loadFromData(data);
+          // Same `lines` the 2D map uses for its current-line indicator — lets the 3D
+          // FOV show which computed scan line is "current" as playback runs, synced to
+          // the same Cesium clock (cesium-viewer.js reads it via a CallbackProperty).
+          if (window.hkCesium) window.hkCesium.setFootprintLines(data.lines || null);
           if (window.hkCesium) window.hkCesium.setPlaying(true);
         })
         .catch(function (err) {
-          stopFakeProgress(false);
+          stopProgress(false);
           setStatus('Footprint 계산 실패: ' + err.message, true);
           if (window.hkCesium) window.hkCesium.setPlaying(true);
         });
     });
   }
 
-  // ── Progress estimate (footprint compute has no real progress feed — the Java/DEM
-  // pipeline is a single blocking subprocess call — so this eases toward 90% over a
-  // typical run's duration and only ever snaps to 100% once the real result lands) ──
+  // ── Real progress — Main.java writes {"done":N,"total":M} to a per-job_id file
+  // while it computes, and /api/footprint/progress (polled here) reads it. Before Java
+  // actually starts (HK load / DEM tile fetch still running), there's no file yet, so
+  // that phase still eases toward a small value just so the bar doesn't look frozen —
+  // everything after Java starts is the real done/total ratio. ──
   var _progressTimer = null;
+  var _progressPct = 0;
   function setProgressPct(pct) {
     $('progress-fill').style.width = pct + '%';
     $('progress-label').textContent = Math.round(pct) + '%';
   }
-  function startFakeProgress() {
+  function startRealProgress(jobId) {
     if (_progressTimer) clearInterval(_progressTimer);
     var bar = $('progress-bar');
     bar.style.display = 'block';
-    bar.title = '실제 서버 진행률이 아니라 일반적인 소요 시간 기준 추정치입니다.';
-    var pct = 0;
-    setProgressPct(pct);
+    bar.title = '';
+    _progressPct = 0;
+    setProgressPct(0);
     _progressTimer = setInterval(function () {
-      pct += (90 - pct) * 0.08;
-      setProgressPct(pct);
-    }, 500);
+      fetch(apiUrl('/api/footprint/progress?job_id=' + encodeURIComponent(jobId)))
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          if (d.total > 0) {
+            bar.title = '';
+            _progressPct = Math.min(99, (d.done / d.total) * 100);
+          } else {
+            bar.title = '준비 중(HK 로드/DEM) — 실제 계산이 시작되면 진행률이 표시됩니다.';
+            _progressPct += (15 - _progressPct) * 0.1;
+          }
+          setProgressPct(_progressPct);
+        })
+        .catch(function () {});
+    }, 700);
   }
-  function stopFakeProgress(success) {
+  function stopProgress(success) {
     if (_progressTimer) { clearInterval(_progressTimer); _progressTimer = null; }
     setProgressPct(success ? 100 : 0);
     setTimeout(function () { $('progress-bar').style.display = 'none'; }, success ? 800 : 0);
+  }
+
+  // ── EOC 마운팅 보정 체크박스 — 3D FOV(cesium-viewer.js)도 켜짐/꺼짐에 맞춰 즉시
+  // 갱신되도록 연동 (footprint 계산 버튼을 누르기 전에도 실시간으로 반영됨).
+  function wireEocToggle() {
+    var chk = $('chk-eoc-correction');
+    if (!chk) return;
+    if (window.hkCesium) window.hkCesium.setEocCorrectionEnabled(chk.checked);
+    chk.addEventListener('change', function () {
+      if (window.hkCesium) window.hkCesium.setEocCorrectionEnabled(chk.checked);
+    });
   }
 
   // ── Search filter (AOI) ──
@@ -487,6 +526,7 @@
   function init() {
     wireTabs();
     wireActions();
+    wireEocToggle();
     wireSearch();
     loadMissions();
     loadAoiList();

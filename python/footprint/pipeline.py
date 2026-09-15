@@ -58,6 +58,7 @@ def compute_footprint(
     line_step: int | None = None,
     sensor: SensorConfig | None = None,
     satellite_id: str = "O1A",
+    progress_json_path: str | None = None,
 ) -> list[FootprintLine]:
     """HK 자세 데이터로부터 footprint를 계산합니다.
 
@@ -72,6 +73,9 @@ def compute_footprint(
         sensor: 센서 스펙. None이면 MultiScape200 기본값 사용
         satellite_id: config.sensor_calibration_path에서 EOC 마운팅 보정값을 찾을 때
             쓰는 위성 키 (예: "O1A", "O1B"). 기본 "O1A".
+        progress_json_path: 지정하면 Java가 계산 도중 이 경로에 주기적으로
+            {"done": N, "total": M}을 써서 실제 진행률을 노출한다 (Main.java 참고).
+            None이면 진행률을 기록하지 않는다.
 
     Returns:
         FootprintLine 리스트 (라인별 좌우 끝점 좌표)
@@ -96,7 +100,7 @@ def compute_footprint(
 
         to_attitude_csv(states, att_csv)
 
-        _run_java(config, str(att_csv), start_utc, end_utc, line_step, str(out_csv), satellite_id)
+        _run_java(config, str(att_csv), start_utc, end_utc, line_step, str(out_csv), satellite_id, progress_json_path)
 
         return _parse_footprint_csv(out_csv)
 
@@ -121,6 +125,7 @@ def _run_java(
     line_step: int,
     out_csv: str,
     satellite_id: str = "O1A",
+    progress_json_path: str | None = None,
 ) -> subprocess.CompletedProcess:
     """Java FootprintCalculator를 실행합니다."""
     env = {
@@ -144,6 +149,7 @@ def _run_java(
         config.orekit_data_path,
         satellite_id,
         config.sensor_calibration_path or "",
+        progress_json_path or "",
     ])
 
     cmd = [

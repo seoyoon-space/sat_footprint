@@ -14,3 +14,4 @@ rasterio>=1.3
 # attitude-viewer (Flask app)
 flask>=3.0
 requests>=2.31
+openpyxl>=3.1  # /old mirror: reads data/old_server_data.xlsx target-coordinate catalog

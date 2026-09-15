@@ -14,11 +14,260 @@
   var _pendingFlyTo = null;
   var _pendingTarget = null;
   var _pendingLiveSatId = null;
+  var _pendingFootprintLines = null;
   var _fovAngleDeg      = 1.6;
   var _fovEntity        = null;
   var _fovCenterEntity  = null;
   var _fovLegEntities   = []; // 4 lines from the satellite down to each corner of the FOV footprint
+  var _zAxisEntity      = null; // live EOC-corrected body +Z boresight line (500km) — see _createFovFootprint
   var _fovOverlayRetried = false;
+  var _footprintLines      = null; // /api/footprint/compute's `lines` array, set by sidebar.js
+  var _footprintLineTimes  = null; // Date.parse(l.t) per entry, index-aligned with _footprintLines — for _interpolateFootprintLine
+  var _footprintLineEntity = null; // "current line" polyline inside the FOV, synced to the clock (PAN/reference band)
+  var _bandLineEntities    = {};   // other bands' "current line" polylines — band name -> entity
+  var _footprintTimeRange  = null; // {min, max} ms — the real line_start~line_end window
+  // The CZML-loaded satellite entity lives in its own CzmlDataSource's entity
+  // collection (ds.entities), NOT viewer.entities — so it isn't reachable via
+  // viewer.entities.getById('satellite') from outside _buildViewer's closure. Kept in
+  // sync with _doUpdateOrbit's local `satEntity` var so the band-line callbacks below
+  // (defined at module scope, not inside _buildViewer) can still read live position.
+  var _activeSatEntity = null;
+
+  // Same closest-by-time lookup as map2d.js's updateScanLine(), so the 3D "current
+  // line" and the 2D map's current line always point at the same computed sample.
+  function _closestFootprintLine(lines, timeMs) {
+    if (!lines || !lines.length) return null;
+    var best = null, bestDist = Infinity;
+    for (var i = 0; i < lines.length; i++) {
+      var t = Date.parse(lines[i].t);
+      if (isNaN(t)) continue;
+      var d = Math.abs(t - timeMs);
+      if (d < bestDist) { bestDist = d; best = lines[i]; }
+    }
+    return best;
+  }
+
+  // `lines` (from /api/footprint/compute) is downsampled to ≤500-ish points for payload
+  // size — measured ~0.22s between samples for a typical compute window. But band-to-
+  // band along-track offsets are all sub-second (order of ±0.1–0.5s, same magnitude as
+  // that spacing), so _closestFootprintLine's nearest-sample snap regularly collapses
+  // two *different* bands' shifted lookup times onto the exact same sample — they'd
+  // render as bit-for-bit identical lines instead of showing their real, smaller
+  // separation. Linear interpolation between the two bracketing samples fixes this: the
+  // real DEM ground track is smooth over a fraction of a second, so this is accurate to
+  // well within a meter — far finer than the ~0.22s sample grid alone can resolve.
+  function _interpolateFootprintLine(lines, times, timeMs) {
+    if (!lines || !lines.length || !times || !times.length) return null;
+    if (timeMs <= times[0]) return lines[0];
+    if (timeMs >= times[times.length - 1]) return lines[lines.length - 1];
+    for (var i = 0; i < times.length - 1; i++) {
+      if (timeMs < times[i] || timeMs > times[i + 1]) continue;
+      var span = times[i + 1] - times[i];
+      var f = span > 0 ? (timeMs - times[i]) / span : 0;
+      var a = lines[i], b = lines[i + 1];
+      var lerp = function(x, y) { return x + (y - x) * f; };
+      return {
+        ll: [lerp(a.ll[0], b.ll[0]), lerp(a.ll[1], b.ll[1])],
+        rl: [lerp(a.rl[0], b.rl[0]), lerp(a.rl[1], b.rl[1])],
+        la: lerp(a.la || 0, b.la || 0),
+        ra: lerp(a.ra || 0, b.ra || 0),
+      };
+    }
+    return null;
+  }
+
+  // ── Multi-band along-track offset ──
+  // Each band's line array sits at a different row on the 2D focal plane
+  // (PC_TBL_BANDn_START_ROW, real hardware calibration values), offset from the
+  // reference band (PAN) purely in the along-track direction. One detector row = one
+  // scanned ground line, so a row offset converts straight to a TIME offset via the
+  // sensor's line rate — no focal-length/angle math needed for this (that's only
+  // required for absolute per-band geolocation, which this isn't). So band X's
+  // "current" line is just PAN's line, looked up at (now + Δt_X) instead of now,
+  // reusing the same already-computed `_footprintLines` (no extra server calls).
+  var BAND_START_ROW = {
+    O1A: { PAN: 3188, BLUE: 4376, GREEN: 4036, RED: 3636, RED_EDGE1: 2420, RED_EDGE2: 2260, RED_EDGE3: 1888, NIR: 2852 },
+    O1B: { PAN: 3534, BLUE: 4630, GREEN: 4255, RED: 3893, RED_EDGE1: 2797, RED_EDGE2: 2425, RED_EDGE3: 2055, NIR: 3163 },
+  };
+  var BAND_COLOR = {
+    PAN: '#ffffff',
+    BLUE: '#3b82f6',
+    GREEN: '#22c55e',
+    RED: '#ef4444',
+    RED_EDGE1: '#fb923c',
+    RED_EDGE2: '#f97316',
+    RED_EDGE3: '#c2410c',
+    NIR: '#a855f7',
+  };
+  var REFERENCE_BAND = 'PAN';
+  // All 8 rows above are kept (real calibration data), but only these 6 are actually
+  // active/used bands — RED_EDGE2/RED_EDGE3 exist in the table but aren't drawn.
+  var DISPLAY_BANDS = ['PAN', 'BLUE', 'GREEN', 'RED', 'RED_EDGE1', 'NIR'];
+  // Per-band show/hide, driven by the checkboxes in the FOV overlay panel (see
+  // _ensureFovOverlay) — starts all-on. Combined with _fovShowNow so a band a user
+  // unchecked stays hidden even while its polyline would otherwise be in range.
+  var _bandVisibility = { PAN: true, BLUE: true, GREEN: true, RED: true, RED_EDGE1: true, NIR: true };
+
+  // Same optical constants as SensorSpec.multiScape200Default() (FootprintCalculator.java)
+  // — currently shared by both satellites there too, no per-satellite override.
+  var SENSOR_FOCAL_LENGTH_MM = 1067.0;
+  var SENSOR_PIXEL_SIZE_UM = 3.2;
+  var SENSOR_FMC_GROUND_SPEED_MPS = 3906.173;
+
+  function _lineRateAtAltitude(altitudeM) {
+    var ifovRad = (SENSOR_PIXEL_SIZE_UM / 1000.0) / SENSOR_FOCAL_LENGTH_MM;
+    var gsd = ifovRad * altitudeM;
+    return gsd > 0 ? (SENSOR_FMC_GROUND_SPEED_MPS / gsd) : null;
+  }
+
+  function _bandTimeOffsetSec(satId, band, altitudeM) {
+    var rows = BAND_START_ROW[satId];
+    if (!rows || rows[band] === undefined || rows[REFERENCE_BAND] === undefined) return null;
+    var lineRate = _lineRateAtAltitude(altitudeM);
+    if (!lineRate) return null;
+    return (rows[band] - rows[REFERENCE_BAND]) / lineRate;
+  }
+
+  // The FOV pyramid's "front"/"back" corner pairs (cornerDirsBody's along-track ±X
+  // spread) aren't real sensor geometry (see the earlier finding: a real pushbroom
+  // sensor has zero along-track FOV) — they're a stylized visual half-angle that
+  // happens to correspond to a real ground point some time ahead/behind "now". Same
+  // idea as the band time-offset above: ground distance covered by that half-angle,
+  // divided by ground speed, gives that time offset — used to pull the REAL DEM
+  // altitude (la/ra) from the already-computed footprint at that instant, instead of
+  // the flat-ellipsoid height _rayEarthIntersect alone would give.
+  function _fovAlongTrackTimeOffsetSec(effectiveAngleDeg, altitudeM) {
+    var halfAngleRad = Cesium.Math.toRadians(effectiveAngleDeg / 2.0);
+    var groundDistM = altitudeM * Math.tan(halfAngleRad);
+    return groundDistM / SENSOR_FMC_GROUND_SPEED_MPS;
+  }
+
+  // ── EOC 마운팅 보정 (FootprintCalculator.java와 동일 로직) ──
+  // 서버는 body +Z 기준 LOS를 mounting(현재 두 위성 모두 0°, no-op) 회전 후 EOC
+  // misalignment 회전(Orekit의 `new Rotation(Vector3D.PLUS_K, eocVector)` — (0,0,1)을
+  // eocVector로 보내는 최소 회전)을 적용해서 계산한다. 3D FOV도 같은 보정을 적용해야
+  // 화면상 FOV 중앙점/피라미드가 실제 계산된 footprint(및 위 "current line")와 같은
+  // 방향을 가리킨다. 지면 높이도 footprint가 계산되어 있으면 그 실제 DEM 고도(la/ra)를
+  // 가져다 쓴다 (_fovAlongTrackTimeOffsetSec) — 계산 전(라이브 트래킹 등)에는 여전히
+  // WGS84 타원체 근사로 표시된다.
+  var _eocVectorRaw = [0, 0, 0]; // /api/sensor-calibration/<satellite>에서 로드, [0,0,0]=무보정
+  var _eocCorrectionEnabled = true; // sidebar.js의 EOC 마운팅 보정 체크박스와 연동
+
+  function _effectiveEocVector() {
+    return _eocCorrectionEnabled ? _eocVectorRaw : [0, 0, 0];
+  }
+
+  function _eocRotationQuaternion(vec) {
+    var normSq = vec ? (vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2]) : 0;
+    if (normSq < 1e-9 * 1e-9) return Cesium.Quaternion.clone(Cesium.Quaternion.IDENTITY, new Cesium.Quaternion());
+    var z = new Cesium.Cartesian3(0, 0, 1);
+    var v = Cesium.Cartesian3.normalize(new Cesium.Cartesian3(vec[0], vec[1], vec[2]), new Cesium.Cartesian3());
+    var dot = Cesium.Math.clamp(Cesium.Cartesian3.dot(z, v), -1, 1);
+    if (dot > 0.9999999) return Cesium.Quaternion.clone(Cesium.Quaternion.IDENTITY, new Cesium.Quaternion());
+    if (dot < -0.9999999) {
+      return Cesium.Quaternion.fromAxisAngle(new Cesium.Cartesian3(1, 0, 0), Math.PI, new Cesium.Quaternion());
+    }
+    var axis = Cesium.Cartesian3.normalize(Cesium.Cartesian3.cross(z, v, new Cesium.Cartesian3()), new Cesium.Cartesian3());
+    return Cesium.Quaternion.fromAxisAngle(axis, Math.acos(dot), new Cesium.Quaternion());
+  }
+
+  function _rotateBodyDir(x, y, z, eocQuat) {
+    var m = Cesium.Matrix3.fromQuaternion(eocQuat, new Cesium.Matrix3());
+    return Cesium.Matrix3.multiplyByVector(m, new Cesium.Cartesian3(x, y, z), new Cesium.Cartesian3());
+  }
+
+  // The CZML orbit itself spans a padded window (±3min or more, so Orekit has enough
+  // HK samples to interpolate) — much wider than the real computed footprint window
+  // (line_start~line_end). Without this, the FOV/current-line would sit there for the
+  // whole padded window instead of only appearing once playback actually enters the
+  // real capture period. null (no footprint computed yet, e.g. plain orbit/live
+  // tracking) means "no gating" — show the FOV as before.
+  function _fovShowNow(time) {
+    if (!_footprintTimeRange) return true;
+    var ms = Cesium.JulianDate.toDate(time).getTime();
+    return ms >= _footprintTimeRange.min && ms <= _footprintTimeRange.max;
+  }
+
+  function _doSetFootprintLines(lines) {
+    var viewer = window.hkCesium.viewer;
+    if (!viewer) return;
+    if (_footprintLineEntity) { viewer.entities.remove(_footprintLineEntity); _footprintLineEntity = null; }
+    Object.keys(_bandLineEntities).forEach(function(band) {
+      viewer.entities.remove(_bandLineEntities[band]);
+    });
+    _bandLineEntities = {};
+    _footprintLines = (lines && lines.length) ? lines : null;
+    _footprintLineTimes = null;
+    _footprintTimeRange = null;
+    if (!_footprintLines) return;
+
+    // Index-aligned with _footprintLines (no filtering) so _interpolateFootprintLine
+    // can bracket by index; times are already ascending (server returns them sorted).
+    _footprintLineTimes = _footprintLines.map(function(l) { return Date.parse(l.t); });
+    var validTimes = _footprintLineTimes.filter(function(t) { return !isNaN(t); });
+    if (validTimes.length) {
+      _footprintTimeRange = { min: Math.min.apply(null, validTimes), max: Math.max.apply(null, validTimes) };
+    }
+
+    // PAN / reference band — uses the actual Rugged-computed left/right altitude
+    // (la/ra) for height instead of clampToGround — more accurate than the FOV
+    // pyramid's plain ellipsoid intersection, since it reflects the real DEM-derived
+    // ground point.
+    _footprintLineEntity = viewer.entities.add({
+      show: true,
+      polyline: {
+        show: new Cesium.CallbackProperty(function(time) {
+          return _fovShowNow(time) && _bandVisibility.PAN;
+        }, false),
+        positions: new Cesium.CallbackProperty(function(time) {
+          var d = Cesium.JulianDate.toDate(time);
+          var line = _interpolateFootprintLine(_footprintLines, _footprintLineTimes, d.getTime());
+          if (!line) return null;
+          return [
+            Cesium.Cartesian3.fromDegrees(line.ll[1], line.ll[0], line.la || 0),
+            Cesium.Cartesian3.fromDegrees(line.rl[1], line.rl[0], line.ra || 0),
+          ];
+        }, false),
+        width: 3,
+        material: new Cesium.ColorMaterialProperty(Cesium.Color.fromCssColorString('#ff4081')),
+      },
+    });
+
+    // Other bands — the same computed swath, just looked up at (now + Δt_band)
+    // instead of now, per the focal-plane row-offset math above. Thinner/dimmer than
+    // the PAN reference line so it stays legible when several overlap near-zero offset.
+    var satId = window.APP_SATELLITE || 'O1A';
+    var rows = BAND_START_ROW[satId] || {};
+    DISPLAY_BANDS.forEach(function(band) {
+      if (band === REFERENCE_BAND || rows[band] === undefined) return;
+      _bandLineEntities[band] = viewer.entities.add({
+        show: true,
+        polyline: {
+          show: new Cesium.CallbackProperty(function(time) {
+            return _fovShowNow(time) && _bandVisibility[band];
+          }, false),
+          positions: new Cesium.CallbackProperty(function(time) {
+            var pos = _activeSatEntity && _activeSatEntity.position && _activeSatEntity.position.getValue(time);
+            if (!pos) return null;
+            var altM = Cesium.Cartesian3.magnitude(pos) - 6378137.0;
+            var dtSec = _bandTimeOffsetSec(satId, band, altM);
+            if (dtSec === null) return null;
+            var shiftedMs = Cesium.JulianDate.toDate(time).getTime() + dtSec * 1000;
+            var line = _interpolateFootprintLine(_footprintLines, _footprintLineTimes, shiftedMs);
+            if (!line) return null;
+            return [
+              Cesium.Cartesian3.fromDegrees(line.ll[1], line.ll[0], line.la || 0),
+              Cesium.Cartesian3.fromDegrees(line.rl[1], line.rl[0], line.ra || 0),
+            ];
+          }, false),
+          width: 2,
+          material: new Cesium.ColorMaterialProperty(
+            Cesium.Color.fromCssColorString(BAND_COLOR[band] || '#ffffff').withAlpha(0.75)
+          ),
+        },
+      });
+    });
+  }
 
   function _doFlyTo(lat, lon, heightMeters) {
     var viewer = window.hkCesium.viewer;
@@ -101,7 +350,21 @@
       var v = parseFloat(deg);
       if (!isNaN(v)) { _fovAngleDeg = v; }
     },
-    setFovVisible: function(visible) {}
+    setFovVisible: function(visible) {},
+    // lines: the `lines` array from /api/footprint/compute — draws a polyline between
+    // each sample's left/right ground point, synced to the clock (see _doSetFootprintLines
+    // above), so the FOV shows which computed scan line is "current" as playback runs.
+    setFootprintLines: function(lines) {
+      if (window.hkCesium.viewer) {
+        _doSetFootprintLines(lines);
+      } else {
+        _pendingFootprintLines = lines;
+      }
+    },
+    // sidebar.js의 EOC 마운팅 보정 체크박스와 연동 — off면 FOV도 순수 body +Z로 보임.
+    setEocCorrectionEnabled: function(enabled) {
+      _eocCorrectionEnabled = !!enabled;
+    }
   };
 
   function createViewer(container, token) {
@@ -139,6 +402,18 @@
       .then(function(r){ return r.json(); })
       .then(function(data){ _buildViewer(container, data.token || ''); })
       .catch(function(){ _buildViewer(container, ''); });
+
+    // FOV 계산이 서버(FootprintCalculator.java)와 같은 EOC 마운팅 보정 벡터를 쓰도록 —
+    // 뷰어 생성과 독립적으로 로드하고, 늦게 도착해도 _effectiveEocVector()는 이후
+    // CallbackProperty 호출 시점에 최신값을 읽으므로 경쟁 조건 없음.
+    fetch((window.APP_BASE_PATH || '') + '/api/sensor-calibration/' + encodeURIComponent(window.APP_SATELLITE || 'O1A'))
+      .then(function(r){ return r.json(); })
+      .then(function(data){
+        if (data && Array.isArray(data.eoc_misalignment_unit_vector)) {
+          _eocVectorRaw = data.eoc_misalignment_unit_vector;
+        }
+      })
+      .catch(function(){});
   }
 
   function _buildViewer(container, token) {
@@ -319,16 +594,17 @@
       }
     }
 
-    // ── Ray-sphere intersection ──
+    // ── Ray-ellipsoid intersection ──
+    // WGS84 (equatorial radius 6378137m, polar radius ~6356752m) — a sphere puts the
+    // ground point up to ~21km off at high latitudes; the real footprint pipeline
+    // (Rugged) intersects the actual DEM against this same ellipsoid, so matching the
+    // ellipsoid here (still no terrain) is the correct first-order fix for this pyramid.
     function _rayEarthIntersect(pos, dir) {
-      var R = 6378137.0;
-      var b = 2.0 * Cesium.Cartesian3.dot(pos, dir);
-      var c = Cesium.Cartesian3.dot(pos, pos) - R * R;
-      var disc = b * b - 4.0 * c;
-      if (disc < 0.0) return null;
-      var t = (-b - Math.sqrt(disc)) / 2.0;
-      if (t < 0.0) return null;
-      return new Cesium.Cartesian3(pos.x + t * dir.x, pos.y + t * dir.y, pos.z + t * dir.z);
+      var ray = new Cesium.Ray(pos, dir);
+      var ellipsoid = (viewer.scene.globe && viewer.scene.globe.ellipsoid) || Cesium.Ellipsoid.WGS84;
+      var interval = Cesium.IntersectionTests.rayEllipsoid(ray, ellipsoid);
+      if (!interval || interval.start < 0.0) return null;
+      return Cesium.Ray.getPoint(ray, interval.start);
     }
 
     // ── FOV footprint ──
@@ -337,6 +613,7 @@
     function _removeFovEntities() {
       if (_fovEntity)       { viewer.entities.remove(_fovEntity);       _fovEntity       = null; }
       if (_fovCenterEntity) { viewer.entities.remove(_fovCenterEntity); _fovCenterEntity = null; }
+      if (_zAxisEntity)     { viewer.entities.remove(_zAxisEntity);     _zAxisEntity     = null; }
       _fovLegEntities.forEach(function(e){ if (e) viewer.entities.remove(e); });
       _fovLegEntities = [];
     }
@@ -363,19 +640,26 @@
       }
 
       // The real sensor FOV is a rectangular (square) pyramid, not a circular cone —
-      // boresight is body +Z (O1A/O1B nadir convention), with the configured angle
-      // as the full across-track width applied symmetrically to both body axes, so
-      // the 4 corner rays form a square-based pyramid down to the ground.
+      // nominal boresight is body +Z (O1A/O1B nadir convention), with the configured
+      // angle as the full across-track width applied symmetrically to both body axes.
+      // The whole fan is then rotated by the same EOC misalignment used server-side
+      // (identity for O1A / when the toggle is off), so the 4 corner rays form a
+      // square-based pyramid around the *actual* calibrated boresight, not the nominal one.
       function cornerDirsBody(effectiveAngleDeg) {
         var thetaRad = Cesium.Math.toRadians(effectiveAngleDeg / 2.0);
         var offset = Math.tan(thetaRad);
         var norm = Math.sqrt(offset * offset + offset * offset + 1);
-        return [
+        var raw = [
           [ offset / norm,  offset / norm, 1 / norm],
           [ offset / norm, -offset / norm, 1 / norm],
           [-offset / norm, -offset / norm, 1 / norm],
           [-offset / norm,  offset / norm, 1 / norm],
         ];
+        var eocQuat = _eocRotationQuaternion(_effectiveEocVector());
+        return raw.map(function(d) {
+          var r = _rotateBodyDir(d[0], d[1], d[2], eocQuat);
+          return [r.x, r.y, r.z];
+        });
       }
 
       // Satellite position + the 4 ground intersection points for the current time,
@@ -392,6 +676,17 @@
         var effectiveAngleDeg = Math.min(_fovAngleDeg, limbAngleDeg - 0.5);
         if (effectiveAngleDeg <= 0) return null;
 
+        // Real DEM altitude for the "front"/"back" corner pairs, borrowed from the
+        // already-computed footprint at the matching along-track-shifted instant (see
+        // _fovAlongTrackTimeOffsetSec) — null when no footprint has been computed yet,
+        // in which case corners just keep their flat-ellipsoid height as before.
+        var nowMs = Cesium.JulianDate.toDate(time).getTime();
+        var dtHalf = _fovAlongTrackTimeOffsetSec(effectiveAngleDeg, altM);
+        var frontLine = _interpolateFootprintLine(_footprintLines, _footprintLineTimes, nowMs + dtHalf * 1000);
+        var backLine  = _interpolateFootprintLine(_footprintLines, _footprintLineTimes, nowMs - dtHalf * 1000);
+        var frontH = frontLine ? (frontLine.la + frontLine.ra) / 2 : null;
+        var backH  = backLine  ? (backLine.la  + backLine.ra)  / 2 : null;
+
         var corners = cornerDirsBody(effectiveAngleDeg);
         var hits = [];
         for (var i = 0; i < corners.length; i++) {
@@ -401,6 +696,11 @@
           if (!dirEcef) return null;
           var hit = _rayEarthIntersect(pos, dirEcef);
           if (!hit) return null;
+          var demH = c[0] >= 0 ? frontH : backH;
+          if (demH !== null) {
+            var carto = Cesium.Cartographic.fromCartesian(hit);
+            hit = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, demH);
+          }
           hits.push(hit);
         }
         return { pos: pos, hits: hits };
@@ -444,10 +744,20 @@
           var pos = satEntity.position.getValue(time, new Cesium.Cartesian3());
           var ori = satEntity.orientation.getValue(time, new Cesium.Quaternion());
           if (!pos || !ori) return undefined;
-          var dirEci  = bodyToEci(0, 0, 1, ori);
+          var eocQuat = _eocRotationQuaternion(_effectiveEocVector());
+          var centerBody = _rotateBodyDir(0, 0, 1, eocQuat);
+          var dirEci  = bodyToEci(centerBody.x, centerBody.y, centerBody.z, ori);
           var dirEcef = eciDirToEcef(dirEci, time);
           if (!dirEcef) return undefined;
-          return _rayEarthIntersect(pos, dirEcef) || undefined;
+          var hit = _rayEarthIntersect(pos, dirEcef);
+          if (!hit) return undefined;
+          var nowMs = Cesium.JulianDate.toDate(time).getTime();
+          var centerLine = _interpolateFootprintLine(_footprintLines, _footprintLineTimes, nowMs);
+          if (centerLine) {
+            var carto = Cesium.Cartographic.fromCartesian(hit);
+            hit = Cesium.Cartesian3.fromRadians(carto.longitude, carto.latitude, (centerLine.la + centerLine.ra) / 2);
+          }
+          return hit;
         }, false),
         point: {
           pixelSize: 5,
@@ -455,6 +765,41 @@
           outlineColor: Cesium.Color.WHITE.withAlpha(0.8),
           outlineWidth: 1,
           heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+        },
+      });
+
+      // Body +Z boresight line (500km, replaces czml_generator.py's old baked
+      // axis_z) — computed live every frame from the same EOC-corrected direction
+      // as _fovCenterEntity above, so this line and the FOV center point can never
+      // drift apart the way a server-baked, uncorrected axis would for O1B.
+      _zAxisEntity = viewer.entities.add({
+        show: true,
+        polyline: {
+          positions: new Cesium.CallbackProperty(function(time) {
+            var pos = satEntity.position.getValue(time, new Cesium.Cartesian3());
+            var ori = satEntity.orientation.getValue(time, new Cesium.Quaternion());
+            if (!pos || !ori) return null;
+            var eocQuat = _eocRotationQuaternion(_effectiveEocVector());
+            var centerBody = _rotateBodyDir(0, 0, 1, eocQuat);
+            var dirEci  = bodyToEci(centerBody.x, centerBody.y, centerBody.z, ori);
+            var dirEcef = eciDirToEcef(dirEci, time);
+            if (!dirEcef) return null;
+            // O1A/O1B's real altitude (~440km) is *less* than the fixed 500km arrow
+            // length, so a fixed-length nadir-pointing line overshoots the ground by
+            // ~60km and appears to plunge through the globe. Clamp to the actual
+            // ground-intersection distance (same ray _fovCenterEntity uses) when the
+            // boresight actually hits the Earth; otherwise keep the fixed 500km so the
+            // line still shows something when it points away from the Earth.
+            var maxLen = 500000.0;
+            var groundHit = _rayEarthIntersect(pos, dirEcef);
+            var len = groundHit ? Math.min(maxLen, Cesium.Cartesian3.distance(pos, groundHit)) : maxLen;
+            var offset = Cesium.Cartesian3.multiplyByScalar(dirEcef, len, new Cesium.Cartesian3());
+            var tip = Cesium.Cartesian3.add(pos, offset, new Cesium.Cartesian3());
+            return [pos, tip];
+          }, false),
+          width: 10,
+          arcType: Cesium.ArcType.NONE,
+          material: new Cesium.PolylineArrowMaterialProperty(Cesium.Color.fromCssColorString('#3232FF')),
         },
       });
     }
@@ -522,6 +867,40 @@
       toggleRow.appendChild(btnOn);
       toggleRow.appendChild(btnOff);
       panel.appendChild(toggleRow);
+
+      // ── Per-band visibility ──
+      var bandLabel = document.createElement('div');
+      bandLabel.className = 'fov-label';
+      bandLabel.textContent = 'BANDS';
+      panel.appendChild(bandLabel);
+
+      var bandRow = document.createElement('div');
+      bandRow.className = 'band-toggle-row';
+      DISPLAY_BANDS.forEach(function(band) {
+        var item = document.createElement('label');
+        item.className = 'band-toggle-item';
+
+        var cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.checked = _bandVisibility[band] !== false;
+        cb.addEventListener('change', function() {
+          _bandVisibility[band] = cb.checked;
+          viewer.scene.requestRender();
+        });
+
+        var swatch = document.createElement('span');
+        swatch.className = 'band-swatch';
+        swatch.style.background = BAND_COLOR[band] || '#ffffff';
+
+        var text = document.createElement('span');
+        text.textContent = band;
+
+        item.appendChild(cb);
+        item.appendChild(swatch);
+        item.appendChild(text);
+        bandRow.appendChild(item);
+      });
+      panel.appendChild(bandRow);
 
       viewport.appendChild(panel);
 
@@ -660,7 +1039,7 @@
       var overlay = ensureOverlay();
       if (!payload || !payload.czml || payload.czml.length === 0) {
         if (czmlSource) viewer.dataSources.remove(czmlSource);
-        czmlSource = null; satEntity = null; startTime = null; stopTime = null;
+        czmlSource = null; satEntity = null; _activeSatEntity = null; startTime = null; stopTime = null;
         _removeFovEntities();
         _showFovOverlay(false);
         // Fall back to the real-time TLE track instead of leaving a blank globe.
@@ -676,6 +1055,7 @@
         viewer.dataSources.add(ds);
         var sat = ds.entities.getById('satellite');
         satEntity = sat || null;
+        _activeSatEntity = satEntity;
         if (!satEntity) {
           overlay.textContent = 'CZML loaded but no satellite entity';
         }
@@ -724,6 +1104,7 @@
     window.hkCesium.setFovVisible = function(visible) {
       if (_fovEntity)       { _fovEntity.show       = visible; }
       if (_fovCenterEntity) { _fovCenterEntity.show = visible; }
+      if (_zAxisEntity)     { _zAxisEntity.show      = visible; }
       _fovLegEntities.forEach(function(e){ if (e) e.show = visible; });
     };
 
@@ -743,6 +1124,10 @@
     if (_pendingLiveSatId !== null) {
       _startLive(_pendingLiveSatId);
       _pendingLiveSatId = null;
+    }
+    if (_pendingFootprintLines !== null) {
+      _doSetFootprintLines(_pendingFootprintLines);
+      _pendingFootprintLines = null;
     }
 
     function wireControls(){

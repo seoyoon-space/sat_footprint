@@ -8,10 +8,14 @@ Required HK data format (dict):
     posWrtEci1   : array of X position in ECI frame (km)
     posWrtEci2   : array of Y position in ECI frame (km)
     posWrtEci3   : array of Z position in ECI frame (km)
-    qbodyWrtEci1 : array of quaternion X (ECI-to-Body)
-    qbodyWrtEci2 : array of quaternion Y (ECI-to-Body)
-    qbodyWrtEci3 : array of quaternion Z (ECI-to-Body)
-    qbodyWrtEci4 : array of quaternion W (ECI-to-Body)
+    qbodyWrtEci1 : array of quaternion X (Body-to-ECI)
+    qbodyWrtEci2 : array of quaternion Y (Body-to-ECI)
+    qbodyWrtEci3 : array of quaternion Z (Body-to-ECI)
+    qbodyWrtEci4 : array of quaternion W (Body-to-ECI)
+
+Used as-is, no direction flip — verified empirically (see attitude-viewer/app.py's
+caller) that the stored HK quaternion is already Body-to-ECI: flipping it breaks the
+separate Java/Rugged footprint pipeline that consumes the same raw column values.
 
 Ported from hk-dashboard: dashboard_web/dash/cesium/czml_generator.py
 """
@@ -40,12 +44,6 @@ def quaternion_to_rotation_matrix(q):
         [2*(x*y + w*z), 1 - 2*(x**2 + z**2), 2*(y*z - w*x)],
         [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x**2 + y**2)]
     ])
-
-
-def quaternion_conjugate(q):
-    """Flip ECI->Body quaternion to Body->ECI for visualization."""
-    x, y, z, w = q
-    return (-x, -y, -z, w)
 
 
 def generate_fov_pyramid_eci(q_body, max_view_angle=30):
@@ -85,7 +83,8 @@ def generate_czml(
         mission_hk: dict with taiSeconds, posWrtEci1-3, qbodyWrtEci1-4
         fov_angle: FOV half-angle in degrees (for CZML pyramid)
         show_fov: include FOV pyramid in CZML
-        show_axes: include body axes (RGB arrows, 500km) in CZML
+        show_axes: include body X/Y axes (RG arrows, 500km) in CZML — the Z/boresight
+            arrow is drawn client-side instead (cesium-viewer.js), not by this flag
         show_ground_track: unused, kept for API compat
         target_coords: list of {"name", "lat", "lon"} dicts for ground markers
 
@@ -120,7 +119,12 @@ def generate_czml(
 
     axis_x_samples = []
     axis_y_samples = []
-    axis_z_samples = []
+    # Z(body +Z/boresight) axis is NOT baked here — cesium-viewer.js draws it live
+    # instead (see _zAxisEntity), because the real boresight includes the EOC
+    # mounting-misalignment rotation (nonzero for O1B, and independent of the
+    # eoc_correction UI toggle), which this server-side CZML bake has no way to
+    # reflect. Baking a raw, uncorrected Z here would visibly drift away from the
+    # FOV pyramid/center point, which does apply that correction.
     axis_len = 500000.0  # 500km
 
     has_valid_data = False
@@ -149,8 +153,6 @@ def generate_czml(
                 else:
                     qx, qy, qz, qw = 0.0, 0.0, 0.0, 1.0
 
-            qx, qy, qz, qw = quaternion_conjugate((qx, qy, qz, qw))
-
             dt = raw_dt - start_ts
             x, y, z = raw_x * 1000.0, raw_y * 1000.0, raw_z * 1000.0  # km -> m
 
@@ -163,15 +165,12 @@ def generate_czml(
 
                 vec_x = np.array([axis_len, 0, 0])
                 vec_y = np.array([0, axis_len, 0])
-                vec_z = np.array([0, 0, axis_len])
 
                 tip_x = np.dot(R, vec_x) + pos_vec
                 tip_y = np.dot(R, vec_y) + pos_vec
-                tip_z = np.dot(R, vec_z) + pos_vec
 
                 axis_x_samples.extend([dt, tip_x[0], tip_x[1], tip_x[2]])
                 axis_y_samples.extend([dt, tip_y[0], tip_y[1], tip_y[2]])
-                axis_z_samples.extend([dt, tip_z[0], tip_z[1], tip_z[2]])
 
             if show_fov:
                 fov_dirs = generate_fov_pyramid_eci((qx, qy, qz, qw), fov_angle)
@@ -265,7 +264,6 @@ def generate_czml(
 
             add_axis_entity("axis_x", axis_x_samples, [255, 50, 50, 255])
             add_axis_entity("axis_y", axis_y_samples, [50, 255, 50, 255])
-            add_axis_entity("axis_z", axis_z_samples, [50, 50, 255, 255])
 
         if show_fov and fov_directions_flat:
             doc.append({
@@ -328,7 +326,7 @@ def build_mission_hk(utc_timestamps, pos_eci_km, q_body_wrt_eci):
     Args:
         utc_timestamps: Unix timestamps (float seconds) or pandas DatetimeIndex
         pos_eci_km: (N, 3) array of ECI position in km
-        q_body_wrt_eci: (N, 3) or (N, 4) array of ECI-to-Body quaternion [x, y, z, w]
+        q_body_wrt_eci: (N, 3) or (N, 4) array of Body-to-ECI quaternion [x, y, z, w]
 
     Returns:
         dict ready for generate_czml()

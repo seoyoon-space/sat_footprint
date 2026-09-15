@@ -1,4 +1,4 @@
-"""
+﻿"""
 실행 가이드
 
 1. 실행 환경
@@ -62,8 +62,6 @@ from typing import Any
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
-
-from config import build_mysql_connection_url
 
 from .schema_map import (
     DEFAULT_MERGE_TOLERANCE_SEC,
@@ -136,14 +134,73 @@ def _build_tolerance_overrides(
     }
 
 
+# 실측 HK 쿼터니언은 DB상 scalar-last(x,y,z,w) 순서로 저장되어 있음이 실제 미션
+# 데이터 기반 검증(A/B 비교)으로 확인됨. 이 프로젝트의 모든 회전 연산
+# (core.math_utils.quat 등)은 scalar-first(w,x,y,z)를 가정하므로, 컬럼명은
+# qbody_wrt_eci1..4 그대로 유지한 채 값만 여기서 한 번 재정렬해 이후 전부
+# (core 계산 + API)가 별도 처리 없이 scalar-first를 신뢰할 수 있게 한다.
+# q_ecef_wrt_eci1..4/cmd_q_body_wrt_eci1..4도 이름 규칙은 같지만, 현재 이 프로젝트의
+# 어떤 코드도 이 필드들을 소비하지 않고 순서도 별도 확인되지 않아 포함하지 않았다.
+_QUATERNION_SCALAR_LAST_GROUPS: tuple[tuple[str, str, str, str], ...] = (
+    ("qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"),
+)
+
+
+def _reorder_scalar_last_quaternions(df: pd.DataFrame) -> pd.DataFrame:
+    for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
+        if all(c in df.columns for c in (col1, col2, col3, col4)):
+            x, y, z, w = df[col1].copy(), df[col2].copy(), df[col3].copy(), df[col4].copy()
+            df[col1], df[col2], df[col3], df[col4] = w, x, y, z
+    return df
+
+
+# qbody_wrt_eci1..4가 실제로는 ECI->Body 회전을 담고 있다는 사실이 DEM 서버 쪽
+# 실사용 코드(czml_generator.py, HK 필드 문서에 "ECI-to-Body"로 명시하고 실제로
+# quaternion_conjugate()를 걸어 Body->ECI로 뒤집은 뒤에만 사용)로 확인됨 - 이 프로젝트의
+# core.coordinates/core.geometry.footprint는 처음부터 "body->ECI를 받는다"고 가정하고
+# 지어졌으므로(quaternion_body2eci라는 인자명 자체가 그 전제), 그 전제를 실제로 맞추려면
+# 로딩 경계에서 켤레(conjugate)를 한 번 취해야 한다. 쿼터니언 켤레는 스칼라부(w)는 그대로
+# 두고 벡터부(x,y,z) 부호만 뒤집으면 되므로, 이미 scalar-first로 재정렬된 뒤에 적용한다
+# (_reorder_scalar_last_quaternions가 먼저 실행되어야 어느 성분이 w인지 알 수 있음).
+def _invert_quaternion_rotation_direction(df: pd.DataFrame) -> pd.DataFrame:
+    # 이 함수는 _reorder_scalar_last_quaternions 이후에 호출되므로 컬럼 순서는 이미
+    # (w, x, y, z) - w(col1)는 그대로 두고 벡터부 x,y,z(col2~4)의 부호만 뒤집는다.
+    for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
+        if all(c in df.columns for c in (col1, col2, col3, col4)):
+            df[col2] = -df[col2]
+            df[col3] = -df[col3]
+            df[col4] = -df[col4]
+    return df
+
+
+# pos_wrt_eci1..3(위치)/vel_wrt_eci1..3(속도)는 DB 원본이 킬로미터(킬로미터/초) 단위로
+# 저장되어 있음이 확인됨(DEM 서버 czml_generator.py도 동일 필드를 km으로 문서화하고
+# 실제로 *1000.0으로 m 변환해 사용). 이 프로젝트의 core.coordinates/core.geometry.footprint는
+# WGS84_A 등 전부 미터 기준으로 지어졌으므로, 로딩 경계에서 한 번 미터로 변환해 이후
+# 전부(core 계산 + API 응답)가 별도 처리 없이 미터임을 신뢰할 수 있게 한다.
+_KM_TO_M_COLUMNS: tuple[str, ...] = (
+    "pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3",
+    "vel_wrt_eci1", "vel_wrt_eci2", "vel_wrt_eci3",
+)
+
+
+def _convert_km_to_m(df: pd.DataFrame) -> pd.DataFrame:
+    for col in _KM_TO_M_COLUMNS:
+        if col in df.columns:
+            df[col] = df[col] * 1000.0
+    return df
+
+
 class HKLoader:
     def __init__(self, connection_url: str, engine: Engine | None = None, satellite_id_col: str | None = None):
         """
         connection_url: SQLAlchemy 접속 문자열 (예: mysql+pymysql://user:pass@host:3306/db)
         engine:         이미 생성된 Engine을 재사용하고 싶을 때 전달 (테스트용 등)
-        satellite_id_col: 같은 DB/테이블에 여러 위성 데이터가 섞여 있을 때 구분 컬럼명.
-                            위성별로 DB 자체가 분리되어 있으면(O1A/O1B가 실제로 그러함)
-                            None으로 두고 필터를 끄면 됩니다.
+        satellite_id_col: 위성별로 테이블 자체가 분리되지 않고, 하나의 테이블 안에 여러
+                            위성 데이터가 행 단위로 섞여 있는 경우에만 쓰는 구분 컬럼명.
+                            O1A/O1B는 같은 DB 안에서 테이블 자체가 위성별로 분리되어
+                            있으므로(get_hk_packet_schema 참고) 이 필터가 필요 없어
+                            None으로 둔다.
         """
         self.engine = engine or create_engine(connection_url, pool_pre_ping=True)
         self.satellite_id_col = satellite_id_col
@@ -157,7 +214,13 @@ class HKLoader:
     def from_env(cls, *, connection_url: str | None = None, schema: str | None = None) -> "HKLoader":
         """환경변수 기반으로 MySQL 연결 생성
            .env 파일 내 구조 확인
+
+        config 모듈은 여기(그리고 for_satellite())에서만 지연 임포트한다 - HKLoader(connection_url=...)
+        로 직접 생성해 쓰는 호출부(예: 이 파일만 다른 프로젝트에 그대로 옮겨 쓰는 경우)는
+        config.py가 아예 없어도 동작해야 하기 때문.
         """
+        from config import build_mysql_connection_url
+
         url = build_mysql_connection_url(connection_url=connection_url, schema=schema)
         return cls(connection_url=url, satellite_id_col=None)
 
@@ -165,7 +228,6 @@ class HKLoader:
     def for_satellite(cls, satellite_id: str) -> "HKLoader":
         """
         config/satellites.toml에 등록된 위성별 DB 프로필로 커넥션 생성.
-        O1A/O1B처럼 위성마다 DB 인스턴스 자체가 다른 구조를 그대로 반영.
         """
         from config import satellite_registry
 
@@ -269,7 +331,11 @@ class HKLoader:
         rename_map = {db_col: canonical for canonical, db_col in mapped_fields.items()}
         rename_map[time_col] = "time"
         df = df.rename(columns=rename_map)
-        return df[["time", *mapped_fields.keys()]]
+        df = df[["time", *mapped_fields.keys()]]
+        df = _reorder_scalar_last_quaternions(df)
+        df = _invert_quaternion_rotation_direction(df)
+        df = _convert_km_to_m(df)
+        return df
 
     def load(
         self,
@@ -285,11 +351,12 @@ class HKLoader:
             - KST 기준 날짜 문자열: "2026-08-20" 또는 "2026-08-20T12:00:00+09:00"
             - UTC ISO8601: "2026-08-20T00:00:00Z"
             - Unix epoch seconds: 1787203236
-        satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명을 위성별로
-                               고르는 데 쓰인다 (tbl_obs1a_hk* / tbl_obs1b_hk*) — 같은
-                               DB 안에 위성별 테이블만 분리돼 있음. None이면 O1A 기본값.
-                               (satellite_id_col이 설정된 경우엔 행 단위 필터에도 쓰인다.)
-        packets:               조회할 패킷 부분집합 (기본: 해당 위성의 스키마 전체)
+        satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명이 위성마다
+                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 어떤 테이블을 조회할지
+                               고르는 데 쓰인다 - None이면 O1A 스키마가 기본값이다.
+                               (satellite_id_col이 별도로 설정된 경우, 같은 테이블 안에
+                               여러 위성이 섞여 있을 때의 행 필터로도 쓰인다.)
+        packets:               조회할 패킷 부분집합 (기본: 해당 위성 스키마 전체)
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)
@@ -373,7 +440,7 @@ def _default_output_path(
 
     start_label = start_dt.strftime("%Y%m%dT%H%M%S")
     end_label = end_dt.strftime("%Y%m%dT%H%M%S")
-    ext = ".csv" if output_format == "csv" else ".txt"
+    ext = {"csv": ".csv", "czml": ".czml"}.get(output_format, ".txt")
     output_dir = Path("hk_output")
     output_dir.mkdir(parents=True, exist_ok=True)
     return str(output_dir / f"{prefix}_{start_label}_{end_label}{ext}")
@@ -399,10 +466,6 @@ def extract_attitude_columns(df: pd.DataFrame, verbose: bool = False) -> pd.Data
 
     The standard export columns are:
       timestamp, px, py, pz, vx, vy, vz, q0, q1, q2, q3
-
-    The function attempts multiple heuristics to find position/velocity triplets
-    since different HK tables use different naming conventions (ECI/ECEF/ITRF,
-    suffix/prefix variations, or single-array columns).
     """
     if df.empty:
         return pd.DataFrame(columns=["timestamp", "px", "py", "pz", "vx", "vy", "vz", "q0", "q1", "q2", "q3"])
@@ -539,49 +602,30 @@ def extract_attitude_columns(df: pd.DataFrame, verbose: bool = False) -> pd.Data
         print(f"[attitude-extract] vel_triplet detected: {vel_triplet}")
 
     # quaternions (various naming conventions)
-    # Output convention: scalar-first (q0=w, q1=x, q2=y, q3=z)
-    # HK convention for qbodyWrtEci/q_eci2body: scalar-last (1=x, 2=y, 3=z, 4=w)
-    QUAT_SCALAR_LAST = [
-        (["qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"],
-         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
-        (["q_body_wrt_eci_1", "q_body_wrt_eci_2", "q_body_wrt_eci_3", "q_body_wrt_eci_4"],
-         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
-        (["q_eci2body_1", "q_eci2body_2", "q_eci2body_3", "q_eci2body_4"],
-         lambda cols: (cols[3], cols[0], cols[1], cols[2])),
-    ]
-    QUAT_SCALAR_FIRST = [
+    quat_candidates = [
         ["q0", "q1", "q2", "q3"],
+        ["q_eci2body_1", "q_eci2body_2", "q_eci2body_3", "q_eci2body_4"],
+        ["qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"],
+        ["q_body_wrt_eci_1", "q_body_wrt_eci_2", "q_body_wrt_eci_3", "q_body_wrt_eci_4"],
     ]
-
     quat_map = None
-    scalar_first = True
-    for candidate in QUAT_SCALAR_FIRST:
+    for candidate in quat_candidates:
         if all(name in df.columns for name in candidate):
             quat_map = candidate
             break
-    if quat_map is None:
-        for candidate, reorder in QUAT_SCALAR_LAST:
-            if all(name in df.columns for name in candidate):
-                quat_map = candidate
-                scalar_first = False
-                break
     if quat_map is None:
         raise ValueError(
             "Quaternion columns were not found. Expected one of: "
             "q0,q1,q2,q3 or q_eci2body_1..4 or qbody_wrt_eci1..4"
         )
 
-    if scalar_first:
-        q0, q1, q2, q3 = quat_map
-    else:
-        q0, q1, q2, q3 = reorder(quat_map)
+    q0, q1, q2, q3 = quat_map
     out["q0"] = df[q0]
     out["q1"] = df[q1]
     out["q2"] = df[q2]
     out["q3"] = df[q3]
     if verbose:
-        order_label = "scalar-first" if scalar_first else "scalar-last → reordered"
-        print(f"[attitude-extract] quat_map used: {quat_map} ({order_label})")
+        print(f"[attitude-extract] quat_map used: {quat_map}")
 
     # Ensure a stable column order and include NaN for any missing attitude fields
     final_cols = ["timestamp", "px", "py", "pz", "vx", "vy", "vz", "q0", "q1", "q2", "q3"]
@@ -682,13 +726,11 @@ def main() -> None:
         prefix = "hk_attitude" if args.attitude_only else "hk"
         args.output = _default_output_path(args.start_time, args.end_time, output_format=args.output_format, prefix=prefix)
 
-    # 실제 배포 환경은 위성별로 별도 DB가 아니라 같은 DB('nstanl') 안에서 테이블
-    # 접두어만 다르다 (get_hk_packet_schema 참고) — 그래서 for_satellite()(별도
-    # DB 커넥션 레지스트리)는 쓰지 않고, 항상 같은 커넥션으로 접속한 뒤
-    # satellite_id를 load()에 넘겨 테이블을 고른다.
     try:
         if args.connection_url:
             loader = HKLoader(args.connection_url)
+        elif args.satellite_id:
+            loader = HKLoader.for_satellite(args.satellite_id)
         else:
             loader = HKLoader.from_env()
     except ValueError as exc:
@@ -696,7 +738,7 @@ def main() -> None:
             2,
             "\nDB connection configuration is missing or incomplete.\n"
             "1) Copy '.env.example' to '.env' and fill in the real MYSQL_* values\n"
-            "2) Or provide --connection-url\n"
+            "2) Or provide --connection-url / --satellite-id\n"
             f"Details: {exc}\n",
         )
 
@@ -716,6 +758,8 @@ def main() -> None:
 
     if args.output_format == "csv":
         _write_csv_output(args.output, df=df)
+    elif args.output_format == "czml":
+        _write_czml_output(args.output, df=df)
     else:
         _write_text_output(args.output, df=df, max_rows=args.max_rows)
 

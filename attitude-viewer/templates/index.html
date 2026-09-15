@@ -16,14 +16,16 @@
     window.APP_BASE_PATH = "{{ request.script_root }}";
     window.APP_SATELLITE = "{{ satellite }}";
     window.APP_HK_ENABLED = {{ hk_enabled | tojson }};
+    window.APP_OLD_SERVER = {{ old | tojson }};
   </script>
 </head>
 <body>
   <div id="app">
     <!-- Header -->
     <div id="header">
-      <a class="back-link" href="{{ request.script_root }}/">← 위성 선택</a>
+      <a class="back-link" href="{{ request.script_root }}{{ '/old' if old else '/' }}">← 위성 선택</a>
       <span class="title">{{ satellite }} ATTITUDE VIEWER</span>
+      {% if old %}<span class="old-server-badge">OLD SERVER</span>{% endif %}
       <span class="spacer"></span>
       <button class="load-btn" id="load-btn" onclick="window.hkCesium.startLiveTracking(window.APP_SATELLITE)">LIVE</button>
     </div>
@@ -55,6 +57,10 @@
         <div class="sidebar-selected" id="sidebar-selected" style="display:none">
           <div class="selected-name" id="selected-name">--</div>
           <div class="selected-meta" id="selected-meta">--</div>
+          <label class="sidebar-toggle" id="eoc-toggle-row" title="sensor_calibration.json의 위성별 EOC 마운팅 보정 적용 여부 — 꺼서 보정 전/후를 비교해볼 수 있음">
+            <input type="checkbox" id="chk-eoc-correction" checked>
+            <span>EOC 마운팅 보정 적용</span>
+          </label>
           <div class="selected-actions">
             <button class="sidebar-btn primary" id="btn-compute-footprint">궤도 + FOOTPRINT 조회</button>
             <button class="sidebar-btn" id="btn-download-geojson" disabled title="먼저 FOOTPRINT를 계산해야 합니다">GeoJSON 다운로드</button>
