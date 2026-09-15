@@ -35,13 +35,13 @@ HK 텔레메트리 ──▶ 자세/궤도 좌표 변환 ──▶ Orekit/Rugged
 ### 3.1 DEM: GLO30 → ASTGTM 교체 (`f5a7aa4`)
 
 - 기존 GLO30 기반 DEM 타일 공급 로직을 **ASTGTMV003** 기반으로 교체
-- 관련 파일: [ASTGTMTileUpdater.java](../java/src/main/java/footprint/ASTGTMTileUpdater.java), [TileRecord.java](../java/src/main/java/footprint/TileRecord.java)
+- 관련 파일: [ASTGTMTileUpdater.java](../footprint-backend/java/src/main/java/footprint/ASTGTMTileUpdater.java), [TileRecord.java](../footprint-backend/java/src/main/java/footprint/TileRecord.java)
 
 ### 3.2 Python 파이프라인 보강
 
-- **[io_adapter.py](../python/footprint/io_adapter.py)**: HK 패킷 병합 시 구간 경계에서 보간되지 않은 `NaT`/`NaN` 행이 섞여 나와 Java 쪽 CSV 파싱이 실패하던 문제 → `from_dataframe()`에서 필수 컬럼 기준으로 결측 행을 사전 제거하도록 수정
-- **[pipeline.py](../python/footprint/pipeline.py)**: Java 프로세스 실패 시 `stderr`만 노출되던 것을 `stdout`도 함께 포함하도록 개선 (원인 파악 용이)
-- **[dem_tiles.py](../python/footprint/dem_tiles.py)** (신규): 전세계 AOI 요청에 대응하기 위해 DEM을 전량 사전 다운로드하지 않고, 요청 좌표 주변만 `tile_index.json`에 없는 타일을 on-demand로 찾아 병합하는 모듈 (`ensure_dem_tiles`)
+- **[io_adapter.py](../footprint-backend/python/footprint/io_adapter.py)**: HK 패킷 병합 시 구간 경계에서 보간되지 않은 `NaT`/`NaN` 행이 섞여 나와 Java 쪽 CSV 파싱이 실패하던 문제 → `from_dataframe()`에서 필수 컬럼 기준으로 결측 행을 사전 제거하도록 수정
+- **[pipeline.py](../footprint-backend/python/footprint/pipeline.py)**: Java 프로세스 실패 시 `stderr`만 노출되던 것을 `stdout`도 함께 포함하도록 개선 (원인 파악 용이)
+- **[dem_tiles.py](../footprint-backend/python/footprint/dem_tiles.py)** (신규): 전세계 AOI 요청에 대응하기 위해 DEM을 전량 사전 다운로드하지 않고, 요청 좌표 주변만 `tile_index.json`에 없는 타일을 on-demand로 찾아 병합하는 모듈 (`ensure_dem_tiles`)
 
 ### 3.3 hk_loader 쿼터니언 컨벤션 자동 판별
 

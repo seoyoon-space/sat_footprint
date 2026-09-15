@@ -46,51 +46,31 @@ def quaternion_to_rotation_matrix(q):
     ])
 
 
-def generate_fov_pyramid_eci(q_body, max_view_angle=30):
-    try:
-        R = quaternion_to_rotation_matrix(q_body)
-        half_angle_rad = np.radians(max_view_angle)
-        offset = np.tan(half_angle_rad)
-
-        directions_body = np.array([
-            [ offset,  offset, -1.0],
-            [ offset, -offset, -1.0],
-            [-offset, -offset, -1.0],
-            [-offset,  offset, -1.0],
-        ])
-
-        norm = np.linalg.norm(directions_body, axis=1, keepdims=True)
-        norm[norm == 0] = 1e-9
-        directions_body = directions_body / norm
-
-        directions_eci = np.dot(R, directions_body.T).T
-        return directions_eci.flatten().tolist()
-    except Exception:
-        return []
-
-
 def generate_czml(
     mission_hk,
-    fov_angle=30,
-    show_fov=True,
     show_axes=True,
     show_ground_track=False,
     target_coords=None,
+    frame="inertial",
 ):
     """Generate CZML document from mission HK data.
 
     Args:
         mission_hk: dict with taiSeconds, posWrtEci1-3, qbodyWrtEci1-4
-        fov_angle: FOV half-angle in degrees (for CZML pyramid)
-        show_fov: include FOV pyramid in CZML
         show_axes: include body X/Y axes (RG arrows, 500km) in CZML — the Z/boresight
             arrow is drawn client-side instead (cesium-viewer.js), not by this flag
         show_ground_track: unused, kept for API compat
         target_coords: list of {"name", "lat", "lon"} dicts for ground markers
+        frame: "inertial" (default) — mission_hk's pos/quat are raw ECI, tagged
+            referenceFrame: INERTIAL so Cesium itself converts to the fixed frame at
+            render time. "fixed" — mission_hk's pos/quat are already Earth-fixed
+            (e.g. pre-converted server-side via hk_api's own coordinates.py model),
+            so referenceFrame is omitted (CZML defaults position to FIXED).
 
     Returns:
         list of CZML packet dicts
     """
+    position_reference_frame = {"referenceFrame": "INERTIAL"} if frame == "inertial" else {}
     if not mission_hk or "taiSeconds" not in mission_hk or len(mission_hk["taiSeconds"]) == 0:
         return []
 
@@ -115,7 +95,6 @@ def generate_czml(
 
     cartesian = []
     orientation = []
-    fov_directions_flat = []
 
     axis_x_samples = []
     axis_y_samples = []
@@ -172,11 +151,6 @@ def generate_czml(
                 axis_x_samples.extend([dt, tip_x[0], tip_x[1], tip_x[2]])
                 axis_y_samples.extend([dt, tip_y[0], tip_y[1], tip_y[2]])
 
-            if show_fov:
-                fov_dirs = generate_fov_pyramid_eci((qx, qy, qz, qw), fov_angle)
-                if fov_dirs:
-                    fov_directions_flat.extend([dt] + fov_dirs)
-
             has_valid_data = True
 
         except Exception:
@@ -205,7 +179,7 @@ def generate_czml(
             "position": {
                 "interpolationAlgorithm": "LINEAR",
                 "interpolationDegree": 1,
-                "referenceFrame": "INERTIAL",
+                **position_reference_frame,
                 "epoch": epoch,
                 "cartesian": cartesian
             },
@@ -240,7 +214,7 @@ def generate_czml(
                     "position": {
                         "interpolationAlgorithm": "LINEAR",
                         "interpolationDegree": 1,
-                        "referenceFrame": "INERTIAL",
+                        **position_reference_frame,
                         "epoch": epoch,
                         "cartesian": samples
                     }
@@ -264,27 +238,6 @@ def generate_czml(
 
             add_axis_entity("axis_x", axis_x_samples, [255, 50, 50, 255])
             add_axis_entity("axis_y", axis_y_samples, [50, 255, 50, 255])
-
-        if show_fov and fov_directions_flat:
-            doc.append({
-                "id": "sensor_fov",
-                "parent": "satellite",
-                "position": {"reference": "satellite#position"},
-                "pyramid": {
-                    "show": True,
-                    "directions": {
-                        "epoch": epoch,
-                        "unitVector": fov_directions_flat,
-                        "interpolationAlgorithm": "LINEAR",
-                        "interpolationDegree": 1
-                    },
-                    "radius": 2000000.0,
-                    "material": {"solidColor": {"color": {"rgba": [0, 255, 255, 40]}}},
-                    "outline": True,
-                    "outlineColor": {"rgba": [0, 255, 255, 255]},
-                    "outlineWidth": 2
-                }
-            })
 
     if target_coords:
         for i, tgt in enumerate(target_coords):

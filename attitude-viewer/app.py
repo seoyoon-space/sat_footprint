@@ -13,12 +13,18 @@ Usage:
     Open http://localhost:5050 in browser.
 
 Query parameters for /api/czml:
-    satellite — O1A or O1B, default: O1A
-    start  — UTC start time (ISO8601), default: 2026-08-08T03:03:00Z
-    end    — UTC end time (ISO8601),   default: 2026-08-08T03:15:00Z
-    fov    — FOV half-angle in degrees, default: 1.6 (MultiScape200)
-    axes   — show body axes (true/false), default: true
-    show_fov — show FOV cone (true/false), default: true
+    satellite   — O1A or O1B, default: O1A
+    start       — UTC start time (ISO8601), default: 2026-08-08T03:03:00Z
+    end         — UTC end time (ISO8601),   default: 2026-08-08T03:15:00Z
+    axes        — show body axes (true/false), default: true
+    coord_model — which ECI->ECEF model converts the orbit for rendering:
+        "cesium" (default) — raw ECI position/orientation from hk_api's
+            /telemetry/query, tagged referenceFrame: INERTIAL; Cesium itself
+            converts to the fixed frame client-side at render time.
+        "hkapi" — pre-converted ECEF position/orientation from hk_api's own
+            /telemetry/czml?coordinate_frame=ecef (its IAU-76/FK5 model).
+            Empirically the two agree to ~5m / ~0.002deg (see conversation),
+            so this is mainly a debug/comparison knob, not a correctness fix.
 """
 
 import json
@@ -29,18 +35,16 @@ import sys
 from pathlib import Path
 
 import numpy as np
-from flask import Flask, jsonify, render_template, request
+import requests
+from flask import Flask, Response, jsonify, render_template, request
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "python" / "hk_loader"))
-sys.path.insert(0, str(PROJECT_ROOT / "python"))
+FOOTPRINT_BACKEND_ROOT = PROJECT_ROOT / "footprint-backend"
+sys.path.insert(0, str(FOOTPRINT_BACKEND_ROOT / "python"))
 
-from dotenv import load_dotenv, dotenv_values
-# Load DB connection settings first (hk_loader import triggers pydantic Settings)
-load_dotenv(PROJECT_ROOT / "python" / "hk_loader" / ".env")
+from dotenv import dotenv_values
 
 from czml_generator import generate_czml, build_mission_hk
-from core.loader.hk_loader import HKLoader, extract_attitude_columns
 
 import ep_client
 import mce_db
@@ -48,12 +52,7 @@ import mps_db
 from footprint.dem_tiles import ensure_dem_tiles
 from footprint.io_adapter import from_dataframe, find_gap_in_range
 from footprint.pipeline import PipelineConfig, compute_footprint_to_dataframe
-from footprint.response import (
-    capture_events,
-    footprint_dataframe_to_response,
-    footprint_to_geojson,
-    load_footprint_rows,
-)
+from footprint.response import footprint_dataframe_to_response, footprint_to_geojson
 
 # Load Cesium token from .env.cesium (separate from .env to avoid pydantic conflict)
 _viewer_env = dotenv_values(Path(__file__).resolve().parent / ".env.cesium")
@@ -87,15 +86,33 @@ class PrefixMiddleware:
 URL_PREFIX = os.environ.get("URL_PREFIX", "/sat_footprint")
 app.wsgi_app = PrefixMiddleware(app.wsgi_app, prefix=URL_PREFIX)
 
-PAJU_TARGET = {"name": "Paju", "lat": 37.7369, "lon": 126.788}
-
 # HK 텔레메트리 DB 연동이 실제로 구축된 위성 목록 (nstanl DB 안에 위성별 hk1~6
 # 테이블이 존재 — schema_map.HK_PACKET_SCHEMA_BY_SATELLITE 참고). 이 목록 밖의
 # 위성은 미션 조회/선택은 가능하지만 궤도(CZML)·footprint 실측 계산은 지원하지 않는다.
 HK_ENABLED_SATELLITES = {"O1A", "O1B"}
 SELECTABLE_SATELLITES = ["O1A", "O1B"]
 
-FOOTPRINT_CSV = PROJECT_ROOT / "data" / "footprint_paju_20260808.csv"
+# hk_api (doeun-space's standalone FastAPI app, vendored under hk_api/) runs on its own
+# port/venv — this reverse-proxies it under this app's single port/prefix instead of
+# making callers reach a second port directly. Kept under /api/hk/ specifically (not
+# flattened into /api/) because this app already has its own /api/footprint/compute
+# (Java/Orekit/Rugged-based) — a different implementation of the same-sounding path.
+HK_API_BASE_URL = os.environ.get("HK_API_BASE_URL", "http://localhost:8001")
+_HK_API_PROXY_EXCLUDED_HEADERS = {"content-encoding", "content-length", "transfer-encoding", "connection"}
+
+
+@app.route("/api/hk/<path:subpath>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
+def proxy_hk_api(subpath):
+    upstream = requests.request(
+        method=request.method,
+        url=f"{HK_API_BASE_URL}/{subpath}",
+        params=request.args,
+        data=request.get_data(),
+        headers={k: v for k, v in request.headers if k.lower() != "host"},
+        timeout=60,
+    )
+    headers = [(k, v) for k, v in upstream.headers.items() if k.lower() not in _HK_API_PROXY_EXCLUDED_HEADERS]
+    return Response(upstream.content, status=upstream.status_code, headers=headers)
 
 DEFAULT_START = "2026-08-08T03:03:00+00:00"
 DEFAULT_END = "2026-08-08T03:15:00+00:00"
@@ -103,7 +120,7 @@ DEFAULT_END = "2026-08-08T03:15:00+00:00"
 # ── Java footprint pipeline (전세계 AOI/미션 footprint on-demand 계산용) ──
 JAVA_HOME = os.environ.get("JAVA_HOME", r"C:\Program Files\Microsoft\jdk-17.0.20.101-hotspot")
 MAVEN_HOME = os.environ.get("MAVEN_HOME", r"C:\Users\NST_SYLEE\AppData\Local\Programs\apache-maven-3.9.16")
-JAVA_PROJECT_DIR = PROJECT_ROOT / "java"
+JAVA_PROJECT_DIR = FOOTPRINT_BACKEND_ROOT / "java"
 TILES_DIR = PROJECT_ROOT / "data" / "tiles"
 TILE_INDEX_PATH = TILES_DIR / "tile_index.json"
 OREKIT_DATA_PATH = PROJECT_ROOT / "data" / "orekit-data-master"
@@ -116,41 +133,110 @@ PROGRESS_DIR = PROJECT_ROOT / "data" / "progress"
 
 
 def _load_attitude_or_error(satellite, start, end):
-    """HK 텔레메트리를 로드하고 자세 컬럼을 추출.
+    """hk_api(/telemetry/query — doeun-space의 FastAPI 서비스, 이 앱 안에선 hk_api/로
+    벤더링해 8001에서 띄우고 /api/hk/*로 프록시함)에서 HK 텔레메트리를 가져와 자세
+    컬럼 DataFrame(timestamp,px,py,pz,vx,vy,vz,q0,q1,q2,q3)으로 변환.
+
 
     api_czml()과 api_footprint_compute() 둘 다 똑같은 로드→빈 확인→추출 시퀀스를
     반복하던 걸 통합한 것 — 성공하면 (att_dataframe, None), 실패하면
     (None, error_message)를 반환한다. Flask 응답 형태(czml: [] vs lines: [])는
     라우트마다 다르므로 여기서는 jsonify하지 않는다.
     """
-    loader = HKLoader.from_env()
-    try:
-        df = loader.load(start_time=start, end_time=end, satellite_id=satellite, packets=["hk1", "hk2"])
-    except ValueError as exc:
-        return None, f"HK 데이터 조회 실패: {exc}"
+    import pandas as pd
 
-    if df.empty:
+    try:
+        resp = requests.post(
+            f"{HK_API_BASE_URL}/telemetry/query",
+            json={"satellite_id": satellite, "start_time": start, "end_time": end},
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        return None, f"hk_api 연결 실패: {exc}"
+
+    if resp.status_code != 200:
+        return None, f"HK 데이터 조회 실패 (hk_api {resp.status_code}): {resp.text[:300]}"
+
+    records = resp.json().get("records", [])
+    if not records:
         return None, "해당 구간에 HK 데이터가 없습니다."
 
-    try:
-        att = extract_attitude_columns(df, verbose=False)
-    except ValueError as exc:
-        return None, f"자세 데이터 추출 실패: {exc}"
+    raw = pd.DataFrame(records)
+    required_cols = [
+        "time", "pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3",
+        "vel_wrt_eci1", "vel_wrt_eci2", "vel_wrt_eci3",
+        "qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4",
+    ]
+    missing = [c for c in required_cols if c not in raw.columns]
+    if missing:
+        return None, f"hk_api 응답에 필요한 컬럼이 없습니다: {missing}"
 
-    # core.loader.hk_loader (doeun-space에서 가져온 버전)가 _fetch_packet() 단계에서
-    # qbody_wrt_eci1..4를 ECI->Body에서 Body->ECI로 미리 뒤집어 내보낸다 — 근데 우리
-    # Java/Rugged footprint 파이프라인은 뒤집지 않은 원본 방향을 받아야 정상 동작하는
-    # 것으로 실측 확인됨(A/B 테스트: 뒤집으면 Rugged DEM 교차 계산이 300초+ 타임아웃/
-    # 메모리 폭주로 깨짐, 안 뒤집으면 실제 타겟 좌표와 ~1.8km까지 근접). 그래서 로더가
-    # 뒤집어 준 걸 여기서 한 번 더 뒤집어(벡터부 x,y,z만 부호 반전, 스칼라부 q0=w는 유지)
-    # 원래(정확한) 방향으로 되돌린다 — CZML 경로/footprint 경로 둘 다 이 att를 그대로
-    # 쓰므로 여기 한 곳에서만 보정하면 충분하다.
-    att = att.copy()
-    att["q1"] = -att["q1"]
-    att["q2"] = -att["q2"]
-    att["q3"] = -att["q3"]
+    # hk_api의 core/loader/hk_loader.py(_fetch_packet)는 qbody_wrt_eci1..4를 scalar-first로
+    # 재정렬만 하고(방향은 뒤집지 않음) 내보낸다 — 그 상태가 이미 Body->ECI라는 게 실측
+    # 확인됨(A/B 테스트: Java/Rugged 파이프라인 + hk_api 자체 ECI->ECEF 합성 둘 다, 뒤집으면
+    # 지구조차 안 보는 방향이 나오고 안 뒤집어야 실제 타겟 근처로 나옴 — hk_api 쪽
+    # _invert_quaternion_rotation_direction() 호출 자체를 빼서 고침, core/loader/hk_loader.py
+    # 참고). 그래서 여기서는 추가 반전 없이 그대로 쓴다.
+    att = pd.DataFrame({
+        "timestamp": pd.to_datetime(raw["time"], utc=True),
+        "px": raw["pos_wrt_eci1"].astype(float),
+        "py": raw["pos_wrt_eci2"].astype(float),
+        "pz": raw["pos_wrt_eci3"].astype(float),
+        "vx": raw["vel_wrt_eci1"].astype(float),
+        "vy": raw["vel_wrt_eci2"].astype(float),
+        "vz": raw["vel_wrt_eci3"].astype(float),
+        "q0": raw["qbody_wrt_eci1"].astype(float),
+        "q1": raw["qbody_wrt_eci2"].astype(float),
+        "q2": raw["qbody_wrt_eci3"].astype(float),
+        "q3": raw["qbody_wrt_eci4"].astype(float),
+    })
 
     return att, None
+
+
+def _load_attitude_ecef_or_error(satellite, start, end):
+    """hk_api의 자체 ECI->ECEF 모델(/telemetry/czml?coordinate_frame=ecef, IAU-76/FK5
+    세차+장동+GMST, hk_api/core/coordinates.py)로 이미 변환된 position/orientation을
+    가져온다. coord_model=hkapi일 때만 쓰이는 경로 — _load_attitude_or_error(raw ECI,
+    기본 경로)와 실측 비교 결과 위치 ~5m, 자세 ~0.002deg 차이로 사실상 동일함을
+    확인했으므로 정확도 목적이 아니라 비교/디버그 목적의 경로다.
+
+    반환: 성공 시 (timestamps_unix, pos_km(N,3), q_scalar_last(N,4) x,y,z,w), None
+          실패 시 None, error_message
+    """
+    import pandas as pd
+
+    try:
+        resp = requests.post(
+            f"{HK_API_BASE_URL}/telemetry/czml",
+            params={"coordinate_frame": "ecef", "include_pointing": "false"},
+            json={"satellite_id": satellite, "start_time": start, "end_time": end},
+            timeout=60,
+        )
+    except requests.RequestException as exc:
+        return None, f"hk_api 연결 실패: {exc}"
+
+    if resp.status_code != 200:
+        return None, f"HK 데이터 조회 실패 (hk_api {resp.status_code}): {resp.text[:300]}"
+
+    packets = resp.json()
+    sat = next((p for p in packets if p.get("id") not in (None, "document")), None)
+    if not sat or "position" not in sat or "orientation" not in sat:
+        return None, "hk_api CZML 응답에 position/orientation이 없습니다."
+
+    epoch = pd.Timestamp(sat["position"]["epoch"])
+    pos = sat["position"]["cartesian"]           # [dt, x, y, z, ...] meters, ECEF
+    quat = sat["orientation"]["unitQuaternion"]  # [dt, x, y, z, w, ...] body->ECEF
+
+    n = len(pos) // 4
+    if n == 0 or len(quat) // 5 != n:
+        return None, "hk_api CZML 응답의 position/orientation 샘플 수가 일치하지 않습니다."
+
+    timestamps_unix = np.array([(epoch + pd.Timedelta(seconds=pos[i * 4])).timestamp() for i in range(n)])
+    pos_km = np.array([[pos[i * 4 + 1], pos[i * 4 + 2], pos[i * 4 + 3]] for i in range(n)]) / 1000.0
+    q_scalar_last = np.array([[quat[i * 5 + 1], quat[i * 5 + 2], quat[i * 5 + 3], quat[i * 5 + 4]] for i in range(n)])
+
+    return (timestamps_unix, pos_km, q_scalar_last), None
 
 
 @app.get("/")
@@ -164,11 +250,15 @@ def index():
     satellite = (request.args.get("satellite") or "O1A").upper()
     if satellite not in SELECTABLE_SATELLITES:
         satellite = "O1A"
+    coord_model = (request.args.get("coord_model") or "cesium").lower()
+    if coord_model not in ("cesium", "hkapi"):
+        coord_model = "cesium"
     return render_template(
         "index.html",
         satellite=satellite,
         hk_enabled=satellite in HK_ENABLED_SATELLITES,
         old=False,
+        coord_model=coord_model,
     )
 
 
@@ -190,6 +280,7 @@ def index_old():
         satellite=satellite,
         hk_enabled=satellite in HK_ENABLED_SATELLITES,
         old=True,
+        coord_model="cesium",
     )
 
 
@@ -230,9 +321,20 @@ def api_czml():
 
     start = request.args.get("start", DEFAULT_START)
     end = request.args.get("end", DEFAULT_END)
-    fov_angle = request.args.get("fov", 1.6, type=float)
     show_axes = request.args.get("axes", "true").lower() == "true"
-    show_fov = request.args.get("show_fov", "true").lower() == "true"
+    coord_model = request.args.get("coord_model", "cesium")
+    if coord_model not in ("cesium", "hkapi"):
+        return jsonify({"czml": [], "error": f"coord_model은 cesium 또는 hkapi여야 합니다 (받음: {coord_model})."})
+
+    if coord_model == "hkapi":
+        # hk_api 자체 ECI->ECEF 모델로 이미 변환된 position/orientation 사용.
+        result, error = _load_attitude_ecef_or_error(satellite, start, end)
+        if error:
+            return jsonify({"czml": [], "error": error})
+        timestamps_unix, pos_km, q_scalar_last = result
+        mission_hk = build_mission_hk(timestamps_unix, pos_km, q_scalar_last)
+        czml = generate_czml(mission_hk, show_axes=show_axes, frame="fixed")
+        return jsonify({"czml": czml, "time_range": {"start": start, "end": end}, "coord_model": coord_model})
 
     att, error = _load_attitude_or_error(satellite, start, end)
     if error:
@@ -262,34 +364,11 @@ def api_czml():
     # Disable CZML pyramid; the JS viewer draws its own footprint using body +Z.
     czml = generate_czml(
         mission_hk,
-        fov_angle=fov_angle,
         show_axes=show_axes,
-        show_fov=False,
+        frame="inertial",
     )
 
-    return jsonify({"czml": czml, "time_range": {"start": start, "end": end}})
-
-
-@app.get("/api/footprint")
-def api_footprint():
-    """Serve precomputed footprint CSV as JSON for the 2D map."""
-    csv_path = request.args.get("csv", str(FOOTPRINT_CSV))
-    if not Path(csv_path).exists():
-        return jsonify({"error": f"Footprint CSV not found: {csv_path}", "lines": []})
-
-    df = load_footprint_rows(csv_path)
-    return jsonify(footprint_dataframe_to_response(df, PAJU_TARGET))
-
-
-@app.get("/api/capture-events")
-def api_capture_events():
-    """Return the footprint scan lines that cross the configured target."""
-    csv_path = request.args.get("csv", str(FOOTPRINT_CSV))
-    if not Path(csv_path).exists():
-        return jsonify({"events": [], "error": f"Footprint CSV not found: {csv_path}"})
-
-    df = load_footprint_rows(csv_path)
-    return jsonify({"events": capture_events(df, PAJU_TARGET)})
+    return jsonify({"czml": czml, "time_range": {"start": start, "end": end}, "coord_model": coord_model})
 
 
 @app.get("/api/ep/aoi")

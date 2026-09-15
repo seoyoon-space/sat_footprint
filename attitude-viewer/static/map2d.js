@@ -371,20 +371,8 @@
   }
 
 
-  function loadData() {
-    fetch((window.APP_BASE_PATH || '') + '/api/footprint')
-      .then(function (r) { return r.json(); })
-      .then(function (data) {
-        footprintData = data;
-        if (loaded) drawAll();
-      })
-      .catch(function (err) {
-        console.error('Footprint load error:', err);
-      });
-  }
-
   // Feed an already-fetched footprint response (e.g. from /api/footprint/compute)
-  // straight into the map, bypassing the default Paju CSV fetch.
+  // straight into the map.
   function loadFromData(data) {
     footprintData = data;
     if (loaded) drawAll();
@@ -441,7 +429,6 @@
   }
 
   window.map2d = {
-    load: loadData,
     loadFromData: loadFromData,
     centerOnTarget: centerOnTarget,
     reveal: reveal,

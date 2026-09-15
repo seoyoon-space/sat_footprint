@@ -2,11 +2,9 @@ numpy>=1.24
 pandas>=2.0
 python-dotenv>=1.0
 
-# HK DB loader (python/hk_loader)
-sqlalchemy>=2.0
+# mce_db.py/mps_db.py (mission DB access, secrets.toml)
 pymysql>=1.1
-pydantic-settings>=2.0
-tomli>=2.0; python_version < "3.11"  # tomllib is stdlib from 3.11+; secrets.toml/config.py fall back to tomli below that
+tomli>=2.0; python_version < "3.11"  # tomllib is stdlib from 3.11+; secrets.toml parsing falls back to tomli below that
 
 # DEM tile setup (scripts/setup_dem_aster.py)
 rasterio>=1.3

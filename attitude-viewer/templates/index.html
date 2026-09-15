@@ -15,6 +15,9 @@
     // or mounted under a prefix (e.g. http://host:8080/sat_footprint/).
     window.APP_BASE_PATH = "{{ request.script_root }}";
     window.APP_SATELLITE = "{{ satellite }}";
+    // ECI->ECEF 모델 선택: "cesium"(기본, Cesium 내장 변환) 또는 "hkapi"(hk_api 자체
+    // IAU-76/FK5 모델, /api/czml에 미리 변환된 ECEF로 요청) — ?coord_model=hkapi로 전환.
+    window.APP_COORD_MODEL = "{{ coord_model }}";
     window.APP_HK_ENABLED = {{ hk_enabled | tojson }};
     window.APP_OLD_SERVER = {{ old | tojson }};
   </script>
