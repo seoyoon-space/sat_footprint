@@ -49,11 +49,12 @@ class TelemetryResponse(BaseModel):
 
 class MissionHkResponse(BaseModel):
     """DEM 서버의 czml_generator.py::generate_czml()이 받는 `mission_hk` dict와 같은
-    필드명/배열 형태(컬럼별 배열, camelCase). 
-    값 자체는 이 API의 다른 엔드포인트와 동일하게 이미 보정된 최종값
-    (위치 m, qbodyWrtEci는 Body->ECI) - generate_czml()이 자체적으로 걸던 km->m 변환과 
-    재정렬+conjugate는 이 응답에 대해서는 걸면 안됨.
-    (README "DEM 서버 연동" 참고).
+    필드명/배열 형태(컬럼별 배열, camelCase).
+    posWrtEci1..3은 미터. qbodyWrtEci1..4는 scalar-last(x,y,z,w) 순서이되, 이 프로젝트
+    자신의 계산(core/coordinates.py 등)이 쓰는 Body->ECI 방향반전은 걸지 않은 값 -
+    DEM의 실제 Orekit/Rugged 파이프라인을 실제 타겟 좌표로 검증해 확인된 방향(README
+    "DEM 서버 연동" 참고). generate_czml()이 자체적으로 걸던 km->m 변환은 이 응답에
+    대해서는 걸면 안 됨(이미 m).
     """
 
     taiSeconds: list[float] = Field(..., description="Unix epoch 초")
@@ -248,8 +249,8 @@ class MissionScheduleRecord(BaseModel):
     cloudAmount: float | None = None
     requestedScanTime: float | None = None
     note: str | None = None
-    missionStatus: str | None = None
-    imageStatus: str | None = None
+    missionStatus: int | None = None
+    imageStatus: int | None = None
     clientData: dict | list | None = None
     results: dict | list | None = None
     scanStart: str | None = Field(None, description="실제 카메라 스캔 시작 시각(ISO8601 UTC)")

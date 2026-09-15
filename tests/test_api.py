@@ -78,10 +78,14 @@ def test_health_check_requires_no_auth():
 
 def test_mission_hk_matches_dem_field_names_and_positional_convention(fake_loader):
     """/telemetry/mission-hk는 DEM 서버 czml_generator.py의 mission_hk dict와 같은
-    camelCase 필드명·배열 형태를 쓰되, 값은 이 API의 다른 곳과 동일한 최종(보정된)
-    값이어야 한다 - qbody_wrt_eci1(w)이 qbodyWrtEci4(w 자리, DEM 필드 순서)로,
-    qbody_wrt_eci2/3/4(x,y,z)가 qbodyWrtEci1/2/3으로 재배치되지만 conjugate는
-    걸리지 않는다(이미 Body->ECI로 보정된 값이므로)."""
+    camelCase 필드명·배열 형태를 쓴다 - qbody_wrt_eci1(w)이 qbodyWrtEci4(w 자리, DEM
+    필드 순서)로, qbody_wrt_eci2/3/4(x,y,z)가 qbodyWrtEci1/2/3으로 재배치된다.
+    이 엔드포인트는 loader.load(invert_quaternion_direction=False)로 로드하므로
+    이 프로젝트 자신의 Body->ECI 방향반전은 걸리지 않는다 - 여기 fixture는 identity
+    쿼터니언(x=y=z=0, w=1)이라 방향과 무관하게 값이 같게 나오고, 방향반전 자체의
+    on/off는 tests/test_loader.py의
+    test_raw_db_quaternion_becomes_scalar_first_body_to_eci_end_to_end /
+    test_reorder_without_invert_matches_dem_expected_direction이 검증한다."""
     resp = client.post(
         "/telemetry/mission-hk",
         json={
