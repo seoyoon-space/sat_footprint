@@ -395,12 +395,13 @@ def build_cesium_track_czml(
 
         if has_pointing:
             ptr = getattr(row, pointing_col)
-            if ptr is not None:
-                if isinstance(ptr, (list, tuple)) and len(ptr) == 3:
-                    pointing_entries.extend([offset_seconds, float(ptr[0]), float(ptr[1]), float(ptr[2])])
-                elif isinstance(ptr, dict):
-                    if "x" in ptr and "y" in ptr and "z" in ptr:
-                        pointing_entries.extend([offset_seconds, float(ptr["x"]), float(ptr["y"]), float(ptr["z"])])
+            coords = None
+            if isinstance(ptr, (list, tuple)) and len(ptr) == 3:
+                coords = ptr
+            elif isinstance(ptr, dict) and "x" in ptr and "y" in ptr and "z" in ptr:
+                coords = (ptr["x"], ptr["y"], ptr["z"])
+            if coords is not None:
+                pointing_entries.extend([offset_seconds, float(coords[0]), float(coords[1]), float(coords[2])])
 
     packet = {"id": id_prefix}
     if pos_entries:

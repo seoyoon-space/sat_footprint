@@ -67,6 +67,8 @@ def evaluate_settling_time(
         if abs(errors[i]) > tolerance:
             continue
         # i부터 tolerance 이내가 hold_duration 만큼 끊기지 않고 유지되는지 확인
+        # 데이터가 hold_duration 전에 끝나 루프가 break 없이 완주해도, 그때까지 관측된
+        # 구간 전부가 tolerance 이내였다는 뜻이므로 held는 True인 채로 유지된다.
         window_end_time = times[i] + hold_duration
         held = True
         for j in range(i, n):
@@ -75,10 +77,6 @@ def evaluate_settling_time(
             if abs(errors[j]) > tolerance:
                 held = False
                 break
-        else:
-            # 루프가 break 없이 끝났다면(데이터가 hold_duration 전에 끝남) 유지 여부는
-            # 마지막까지 관측된 구간에서만 판단 가능 -> 관측된 구간 전부가 tolerance 이내였으므로 유지로 인정
-            held = True
         if held:
             settled_index = i
             break

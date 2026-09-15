@@ -106,6 +106,25 @@ def test_merge_packets_out_of_tolerance_is_nan():
     assert merged.loc[1, "body_rate_x"] != merged.loc[1, "body_rate_x"]  # NaN check
 
 
+def test_merge_packets_sorts_out_of_order_input():
+    """_ensure_utc()는 이미 정렬된 입력(HKLoader._fetch_packet의 SQL ORDER BY 결과)엔
+    재정렬을 건너뛰지만, merge_packets()는 임의의 DataFrame을 받을 수 있는 공개
+    유틸리티이므로 정렬 안 된 입력이 오면 여전히 정렬해야 한다."""
+    hk1 = pd.DataFrame({"time": _ts([3, 1, 0, 2]), "q_eci2body_1": [0.4, 0.2, 0.1, 0.3]})
+    hk2 = pd.DataFrame({"time": _ts([0.1, 1.1, 2.1, 3.1]), "body_rate_x": [1.0, 2.0, 3.0, 4.0]})
+
+    merged = merge_packets(
+        {"hk1": hk1, "hk2": hk2},
+        master_key="hk1",
+        tolerance_sec=1.0,
+        interpolate_gaps=False,
+    )
+
+    assert list(merged["time"]) == sorted(merged["time"])
+    assert list(merged["q_eci2body_1"]) == [0.1, 0.2, 0.3, 0.4]
+    assert list(merged["body_rate_x"]) == [1.0, 2.0, 3.0, 4.0]
+
+
 def test_slice_time_range():
     df = pd.DataFrame({"time": _ts([0, 1, 2, 3, 4]), "value": range(5)})
     sliced = slice_time_range(df, "2026-08-01T00:00:01Z", "2026-08-01T00:00:03Z")

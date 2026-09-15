@@ -16,7 +16,7 @@ from pathlib import Path
 try:
     import tomllib
 except ModuleNotFoundError:  # Python < 3.11 (tomllib is stdlib only from 3.11)
-    import tomli as tomllib 
+    import tomli as tomllib  
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -113,15 +113,11 @@ def build_mysql_connection_url(
             "MySQL env is incomplete. Set MYSQL_HOST, MYSQL_USER, MYSQL_DB (or MYSQL_CONNECTION_URL)."
         )
 
-    # MySQL에서 schema와 database는 보통 같은 값입니다.
-    # satellite_id(O1A)와 같은 값은 DB 이름으로 사용하면 안 됩니다.
-    # 실제 운영 DB는 nstanl 같은 database 이름을 사용해야 하며,
-    # 별도 schema를 가진 구조라면 그 값이 db와 동일해야 합니다.
-    if db and schema and schema not in {db, ""}:
-        db = db
-    elif not db and schema:
-        db = schema
-
+    # MySQL에서 schema와 database는 보통 같은 값입니다. satellite_id(O1A)와 같은 값을
+    # DB 이름으로 쓰면 안 되고, 실제 운영 DB는 nstanl 같은 database 이름이어야 합니다 -
+    # 위에서 이미 db가 반드시 값을 가짐을 보장했으므로(없으면 ValueError), 여기서는 그
+    # db를 그대로 쓴다. schema는 db와 다른 값을 가리키려는 게 아니라면 별도로 쓰이지
+    # 않는다(둘이 어긋나는 걸 검증하고 싶다면 여기서 명시적으로 확인해야 한다).
     return f"mysql+pymysql://{user}:{password or ''}@{host}:{port}/{db}"
 
 

@@ -251,8 +251,7 @@ class HKLoader:
             self._columns_cache[table_name] = columns
             return columns
 
-    def _resolve_time_column(self, table_name: str, preferred: str) -> str:
-        columns = self._get_table_columns(table_name)
+    def _resolve_time_column(self, table_name: str, preferred: str, columns: set[str]) -> str:
         candidates = [
             preferred,
             "timeUtc",
@@ -282,16 +281,17 @@ class HKLoader:
         invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
         """단일 hk 테이블에서 지정 구간의 데이터를 조회해 canonical 컬럼명으로 반환."""
-        start_epoch = int(start_time)
-        end_epoch = int(end_time)
+        # load()의 _normalize_query_time()이 이미 int로 정규화해서 넘기므로 재캐스팅 불필요.
+        start_epoch = start_time
+        end_epoch = end_time
 
+        available_columns = self._get_table_columns(spec.table)
         try:
-            time_col = self._resolve_time_column(spec.table, spec.time_col)
+            time_col = self._resolve_time_column(spec.table, spec.time_col, available_columns)
         except ValueError:
             logger.exception("Unable to resolve valid time column for table '%s'", spec.table)
             raise
 
-        available_columns = self._get_table_columns(spec.table)
         mapped_fields = {canonical: db_col for canonical, db_col in spec.fields.items() if db_col in available_columns}
         if not mapped_fields:
             logger.warning("No HK fields were found in table '%s'; available columns: %s", spec.table, sorted(available_columns))

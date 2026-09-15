@@ -34,6 +34,20 @@ __all__ = [
 ]
 
 
+def _iso_utc(dt: datetime) -> str:
+    """CZML의 ISO8601 UTC 표기('Z' 접미사)로 변환 - line_track_to_czml/footprint_track_to_czml이
+    공유하는 시간 포맷팅."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _flatten_lonlat(corners: list[tuple[float, float] | None]) -> list[float]:
+    """[(lon, lat), ...] -> CZML cartographicDegrees 평탄화 배열([lon, lat, alt, ...],
+    alt는 항상 0) - footprint_to_czml/footprint_track_to_czml이 공유."""
+    return [v for lon, lat in corners for v in (lon, lat, 0.0)]
+
+
 def intersect_wgs84_ellipsoid(
     origin_ecef: Vector3,
     direction_ecef: Vector3,
@@ -249,9 +263,7 @@ def footprint_to_czml(
     corners = footprint.get("corners") or []
     valid_corners = [c for c in corners if c is not None]
     if footprint.get("visible") and len(valid_corners) >= 3:
-        cartographic_degrees: list[float] = []
-        for lon, lat in corners:
-            cartographic_degrees.extend([lon, lat, 0.0])
+        cartographic_degrees = _flatten_lonlat(corners)
         czml.append(
             {
                 "id": f"{id_prefix}_polygon",
@@ -352,15 +364,10 @@ def line_track_to_czml(
     props = dict(properties or {})
     czml: list[dict] = [{"id": "document", "version": "1.0"}]
 
-    def _iso(dt: datetime) -> str:
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat().replace("+00:00", "Z")
-
     for i, (t, line) in enumerate(samples):
         start_dt = t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
         end_dt = samples[i + 1][0] if i + 1 < len(samples) else start_dt + timedelta(seconds=default_duration_sec)
-        availability = f"{_iso(start_dt)}/{_iso(end_dt)}"
+        availability = f"{_iso_utc(start_dt)}/{_iso_utc(end_dt)}"
 
         left, right = line.get("left"), line.get("right")
         if not (line.get("visible") and left is not None and right is not None):
@@ -372,7 +379,7 @@ def line_track_to_czml(
             {
                 "id": f"{id_prefix}_{i}",
                 "availability": availability,
-                "properties": {**props, "time": _iso(start_dt)},
+                "properties": {**props, "time": _iso_utc(start_dt)},
                 "polyline": {
                     "positions": {"cartographicDegrees": [lon1, lat1, 0.0, lon2, lat2, 0.0]},
                     "material": {"solidColor": {"color": {"rgba": list(line_rgba)}}},
@@ -406,23 +413,16 @@ def footprint_track_to_czml(
     props = dict(properties or {})
     czml: list[dict] = [{"id": "document", "version": "1.0"}]
 
-    def _iso(dt: datetime) -> str:
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.isoformat().replace("+00:00", "Z")
-
     for i, (t, footprint) in enumerate(samples):
         start_dt = t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
         end_dt = samples[i + 1][0] if i + 1 < len(samples) else start_dt + timedelta(seconds=default_duration_sec)
-        availability = f"{_iso(start_dt)}/{_iso(end_dt)}"
-        sample_props = {**props, "time": _iso(start_dt)}
+        availability = f"{_iso_utc(start_dt)}/{_iso_utc(end_dt)}"
+        sample_props = {**props, "time": _iso_utc(start_dt)}
 
         corners = footprint.get("corners") or []
         valid_corners = [c for c in corners if c is not None]
         if footprint.get("visible") and len(valid_corners) >= 3:
-            cartographic_degrees: list[float] = []
-            for lon, lat in corners:
-                cartographic_degrees.extend([lon, lat, 0.0])
+            cartographic_degrees = _flatten_lonlat(corners)
             czml.append(
                 {
                     "id": f"{id_prefix}_polygon_{i}",
