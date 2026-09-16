@@ -152,6 +152,33 @@ def rotate_vector_axis_angle(vec: Vector3 | list[float], axis: Vector3 | list[fl
     )
 
 
+def quaternion_from_vector_to_vector(v_from: Vector3 | list[float], v_to: Vector3 | list[float]) -> Quaternion:
+    """단위벡터 v_from을 v_to로 보내는 최소 회전(축=cross, 각=acos(dot))의 쿼터니언.
+
+    카메라 EOC 마운팅 보정처럼 "nominal 축을 실측 방향으로 보내는 최소 회전"이
+    필요한 곳에서 공용으로 쓰인다(Hipparchus의 `new Rotation(axis1, axis2)`와 동일한 정의).
+    """
+    a = normalize(v_from)
+    b = normalize(v_to)
+    d = dot(a, b)
+
+    if d > 1.0 - 1e-12:
+        return (1.0, 0.0, 0.0, 0.0)
+
+    if d < -1.0 + 1e-9:
+        # 정반대 방향 - 180도 회전. a에 수직이기만 하면 축 선택은 결과에 영향 없음.
+        axis = cross((1.0, 0.0, 0.0), a)
+        if magnitude(axis) < 1e-6:
+            axis = cross((0.0, 1.0, 0.0), a)
+        axis = normalize(axis)
+        return (0.0, axis[0], axis[1], axis[2])
+
+    c = cross(a, b)
+    s = math.sqrt((1.0 + d) * 2.0)
+    inv_s = 1.0 / s
+    return quaternion_normalize((0.5 * s, c[0] * inv_s, c[1] * inv_s, c[2] * inv_s))
+
+
 def quaternion_to_euler_xyz(q: Quaternion | list[float]) -> Vector3:
     """scalar-first 쿼터니언 -> XYZ 시퀀스 오일러각(rad)."""
     w, x, y, z = quaternion_normalize(q)

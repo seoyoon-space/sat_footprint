@@ -81,6 +81,11 @@ class FootprintRequest(BaseModel):
     boresight_x: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 x")
     boresight_y: float = Field(0.0, description="바디 프레임 보어사이트 방향 벡터 y")
     boresight_z: float = Field(1.0, description="바디 프레임 보어사이트 방향 벡터 z")
+    satellite_id: str | None = Field(
+        None,
+        description="지정하면 data/sensor_calibration.json의 EOC 카메라 마운팅 보정을 적용 (예: O1B). "
+        "미지정 시 무보정(기존과 동일)",
+    )
 
 
 class CameraRayTrackRequest(BaseModel):

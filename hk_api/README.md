@@ -479,6 +479,26 @@ curl -X POST "http://localhost:8000/footprint/track/czml" \
   }'
 ```
 
+### EOC camera mounting correction (`satellite_id` -> `data/sensor_calibration.json`)
+
+The camera is never mounted perfectly square with the body +Z axis - the real as-built
+misalignment is stored per satellite in `data/sensor_calibration.json` (shared with
+`footprint-backend`'s Java/Rugged pipeline, see
+[`docs/fov-eoc-boresight.md`](../docs/fov-eoc-boresight.md)). All of the satellite-driven
+footprint endpoints (`/footprint/rays`, `/footprint/track(/czml)`, `/footprint/line/track*`)
+apply this correction automatically from the request's `satellite_id` - the same "rotate body
++Z to the calibrated unit vector" minimal rotation the Java pipeline uses, applied to the
+boresight and all FOV corner rays before the ellipsoid intersection. A satellite with no
+calibrated entry (e.g. `O1A`) is unaffected - this is a no-op, identical to earlier versions of
+this API. `POST /footprint/compute` and `/footprint/czml` (manual position/quaternion, no real
+telemetry) accept an optional `satellite_id` field for the same correction; omit it to get the
+uncorrected geometry as before.
+
+Looking up the calibration file itself resolves next to the repo's `data/` folder by default;
+override with the `SENSOR_CALIBRATION_PATH` env var if this project is embedded elsewhere
+without that sibling folder (a missing file/satellite/field is treated as no correction, not an
+error).
+
 ### Push-broom line footprint (current scan line)
 
 `/footprint/track` treats the camera as a frame sensor - a full FOV rectangle projected at

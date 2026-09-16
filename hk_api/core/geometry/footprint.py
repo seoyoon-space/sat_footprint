@@ -9,12 +9,15 @@ import math
 from datetime import datetime, timedelta, timezone
 
 from core.coordinates import WGS84_A, WGS84_B, ecef_to_geodetic, eci_to_ecef
+from core.geometry.sensor_calibration import get_eoc_misalignment_unit_vector
 from core.math_utils.quat import (
     Quaternion,
     Vector3,
     cross,
     dot,
+    magnitude,
     normalize,
+    quaternion_from_vector_to_vector,
     rotate_vector_axis_angle,
     rotate_vector_by_quaternion,
 )
@@ -143,6 +146,7 @@ def camera_rays_ecef(
     fov_x_deg: float,
     fov_y_deg: float,
     boresight_body: Vector3 = (0.0, 0.0, 1.0),
+    satellite_id: str | None = None,
 ) -> dict:
     """카메라 boresight + FOV 네 모서리의 ECEF 광선(공통 원점 + 5개 방향)만 계산.
 
@@ -150,6 +154,12 @@ def camera_rays_ecef(
     받아 자체 지형모델로 교차시켜 풋프린트를 계산하는 용도로 쓴다(compute_footprint처럼
     이 API 자체가 매끈한 WGS-84 타원체로 근사 교차하는 것보다 더 정확한 결과를 얻을 수
     있음). 방향 벡터는 위치가 아니므로 ECI->ECEF는 순수 회전만 적용한다.
+
+    satellite_id: 지정하면 data/sensor_calibration.json의 EOC(카메라) 마운팅 보정을
+        적용한다 - footprint-backend(Java)의 FootprintCalculator가 쓰는 것과 정확히 같은
+        "body +Z를 실측 unit vector로 보내는 최소 회전"을 boresight/FOV 모서리 전체에
+        일괄 적용한다(docs/fov-eoc-boresight.md 참고). 위성에 보정값이 없으면(예: O1A)
+        무보정 - satellite_id를 안 주는 기존 호출과 동일하게 동작한다.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
@@ -157,6 +167,12 @@ def camera_rays_ecef(
     origin_ecef = eci_to_ecef(sat_pos_eci, utc_datetime)
     boresight = normalize(boresight_body)
     corner_dirs_body = fov_corner_rays_body(boresight, fov_x_deg, fov_y_deg)
+
+    eoc_vector = get_eoc_misalignment_unit_vector(satellite_id)
+    if magnitude(eoc_vector) > 1e-9:
+        eoc_quat = quaternion_from_vector_to_vector((0.0, 0.0, 1.0), eoc_vector)
+        boresight = rotate_vector_by_quaternion(boresight, eoc_quat)
+        corner_dirs_body = [rotate_vector_by_quaternion(d, eoc_quat) for d in corner_dirs_body]
 
     def _dir_ecef(dir_body: Vector3) -> Vector3:
         dir_eci = rotate_vector_by_quaternion(dir_body, quaternion_body2eci)
@@ -176,6 +192,7 @@ def compute_footprint(
     fov_x_deg: float,
     fov_y_deg: float,
     boresight_body: Vector3 = (0.0, 0.0, 1.0),
+    satellite_id: str | None = None,
 ) -> dict:
     """카메라 FOV의 지상 풋프린트(중심점 + 네 모서리)를 위경도(lon, lat)로 계산.
 
@@ -183,11 +200,15 @@ def compute_footprint(
     너머를 바라보는 광선은 None으로 남기고 `visible`이 False이면 FOV의 일부(또는
     전부)가 지구를 비켜가고 있다는 뜻. 실제 지형(DEM)을 반영한 정밀 풋프린트가
     필요하면 camera_rays_ecef()로 광선만 받아 지형 데이터가 있는 쪽에서 교차시킬 것.
+
+    satellite_id: camera_rays_ecef() 참고 - EOC 마운팅 보정 적용 여부.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
 
-    rays = camera_rays_ecef(sat_pos_eci, quaternion_body2eci, utc_datetime, fov_x_deg, fov_y_deg, boresight_body)
+    rays = camera_rays_ecef(
+        sat_pos_eci, quaternion_body2eci, utc_datetime, fov_x_deg, fov_y_deg, boresight_body, satellite_id=satellite_id
+    )
     origin_ecef = rays["origin_ecef"]
 
     def _hit_to_lonlat(direction_ecef: Vector3) -> tuple[float, float] | None:
@@ -301,6 +322,7 @@ def line_ground_points(
     utc_datetime: datetime,
     fov_across_deg: float,
     boresight_body: Vector3 = (0.0, 0.0, 1.0),
+    satellite_id: str | None = None,
 ) -> dict:
     """푸시브룸(라인스캔) 센서가 이 순간 스캔 중인 '한 줄'의 좌/우 지상점(WGS-84 타원체
     근사)을 계산.
@@ -314,9 +336,11 @@ def line_ground_points(
     across-track(폭 방향)인지는 compute_footprint/camera_rays_ecef와 동일하게
     boresight_body(및 그로부터 유도되는 fov_corner_rays_body의 right/up 축)가 결정하므로,
     호출자가 실제 카메라 마운팅에 맞는 boresight_body를 넘겨야 한다.
+
+    satellite_id: camera_rays_ecef() 참고 - EOC 마운팅 보정 적용 여부.
     """
     footprint = compute_footprint(
-        sat_pos_eci, quaternion_body2eci, utc_datetime, fov_across_deg, 0.0, boresight_body
+        sat_pos_eci, quaternion_body2eci, utc_datetime, fov_across_deg, 0.0, boresight_body, satellite_id=satellite_id
     )
     corners = footprint.get("corners") or []
     left = corners[0] if len(corners) > 0 else None

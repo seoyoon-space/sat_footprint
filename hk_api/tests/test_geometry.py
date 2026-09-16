@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from core.coordinates import WGS84_A, WGS84_B
+from core.geometry import footprint as footprint_module
 from core.geometry.footprint import (
     boresight_ray_ecef,
     camera_rays_ecef,
@@ -22,6 +23,7 @@ from core.geometry.footprint import (
     line_to_geojson,
     line_track_to_czml,
 )
+from core.math_utils.quat import quaternion_from_vector_to_vector, rotate_vector_by_quaternion
 
 
 def _numpy_ellipsoid_intersection(origin, direction, a=WGS84_A, b=WGS84_B):
@@ -367,3 +369,95 @@ def test_line_track_to_czml_skips_not_visible_samples():
     ids = [p["id"] for p in czml]
     assert "ln_0" in ids
     assert "ln_1" not in ids
+
+
+def test_quaternion_from_vector_to_vector_rotates_source_onto_target():
+    target = (0.012514, -0.003196, 0.999917)  # 실제 O1B EOC 보정값
+    q = quaternion_from_vector_to_vector((0.0, 0.0, 1.0), target)
+    rotated = rotate_vector_by_quaternion((0.0, 0.0, 1.0), q)
+    # target 자체는 정규화된 단위벡터가 아니므로(실측값을 소수 6자리로 저장), 회전 결과는
+    # target을 정규화한 값과 비교한다.
+    norm = math.sqrt(sum(c * c for c in target))
+    np.testing.assert_allclose(rotated, tuple(c / norm for c in target), atol=1e-9)
+
+
+def test_quaternion_from_vector_to_vector_identity_when_already_aligned():
+    q = quaternion_from_vector_to_vector((0.0, 0.0, 1.0), (0.0, 0.0, 1.0))
+    assert q == pytest.approx((1.0, 0.0, 0.0, 0.0))
+
+
+def test_quaternion_from_vector_to_vector_handles_opposite_vectors():
+    q = quaternion_from_vector_to_vector((0.0, 0.0, 1.0), (0.0, 0.0, -1.0))
+    rotated = rotate_vector_by_quaternion((0.0, 0.0, 1.0), q)
+    np.testing.assert_allclose(rotated, (0.0, 0.0, -1.0), atol=1e-9)
+
+
+def test_camera_rays_ecef_applies_eoc_misalignment_when_satellite_calibrated(monkeypatch):
+    """EOC 보정이 있는 위성(O1B 실측값을 흉내낸 가짜 벡터)을 지정하면, docs/fov-eoc-boresight.md가
+    설명하는 대로 "body +Z를 그 벡터로 보내는 최소 회전"이 boresight/FOV 모서리 전체에
+    적용되어야 한다 - 무보정(satellite_id=None) 결과와 달라짐을 확인."""
+    eoc_vector = (0.012514, -0.003196, 0.999917)
+    monkeypatch.setattr(
+        footprint_module,
+        "get_eoc_misalignment_unit_vector",
+        lambda satellite_id: eoc_vector if satellite_id else (0.0, 0.0, 0.0),
+    )
+
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+    corrected = camera_rays_ecef(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(0.0, 0.0, 1.0), satellite_id="O1B"
+    )
+    uncorrected = camera_rays_ecef(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(0.0, 0.0, 1.0), satellite_id=None
+    )
+
+    assert not np.allclose(corrected["boresight_direction_ecef"], uncorrected["boresight_direction_ecef"])
+    # 회전은 각도/노름을 보존해야 하므로, 모든 방향은 여전히 단위벡터.
+    for d in [corrected["boresight_direction_ecef"], *corrected["fov_corner_directions_ecef"]]:
+        np.testing.assert_allclose(np.linalg.norm(d), 1.0, rtol=1e-9)
+
+
+def test_camera_rays_ecef_no_correction_when_satellite_has_no_calibration(monkeypatch):
+    """실제 sensor_calibration.json에서 O1A는 무보정((0,0,0))이므로, satellite_id="O1A"를
+    지정해도 satellite_id 없이 호출한 것과 결과가 동일해야 한다."""
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+
+    with_o1a = camera_rays_ecef(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(0.0, 0.0, 1.0), satellite_id="O1A"
+    )
+    without_satellite = camera_rays_ecef(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=(0.0, 0.0, 1.0), satellite_id=None
+    )
+
+    np.testing.assert_allclose(with_o1a["boresight_direction_ecef"], without_satellite["boresight_direction_ecef"])
+
+
+def test_compute_footprint_applies_eoc_misalignment_via_satellite_id(monkeypatch):
+    """compute_footprint()가 camera_rays_ecef()를 통해 EOC 보정을 실제로 전달하는지 - 지상
+    footprint 폴리곤 좌표 레벨에서 확인(단순 방향벡터가 아니라 실제 사용 경로 검증)."""
+    eoc_vector = (0.012514, -0.003196, 0.999917)
+    monkeypatch.setattr(
+        footprint_module,
+        "get_eoc_misalignment_unit_vector",
+        lambda satellite_id: eoc_vector if satellite_id else (0.0, 0.0, 0.0),
+    )
+
+    identity_q = (1.0, 0.0, 0.0, 0.0)
+    sat_pos_eci = (WGS84_A + 700_000.0, 0.0, 0.0)
+    dt = datetime(2026, 8, 20, 0, 0, 0, tzinfo=timezone.utc)
+    boresight_body = (-1.0, 0.0, 0.0)  # identity 자세이므로 ECI에서도 지구 중심(nadir) 방향
+
+    corrected = compute_footprint(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=boresight_body, satellite_id="O1B"
+    )
+    uncorrected = compute_footprint(
+        sat_pos_eci, identity_q, dt, fov_x_deg=5.0, fov_y_deg=5.0, boresight_body=boresight_body, satellite_id=None
+    )
+
+    assert corrected["visible"] and uncorrected["visible"]
+    assert corrected["center"] != pytest.approx(uncorrected["center"])

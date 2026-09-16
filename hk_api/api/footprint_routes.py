@@ -43,6 +43,7 @@ def _compute_footprint_from_request(req: FootprintRequest) -> dict:
         fov_x_deg=req.fov_x_deg,
         fov_y_deg=req.fov_y_deg,
         boresight_body=(req.boresight_x, req.boresight_y, req.boresight_z),
+        satellite_id=req.satellite_id,
     )
 
 
@@ -132,6 +133,7 @@ def camera_ray_track_endpoint(req: CameraRayTrackRequest) -> CameraRayTrackRespo
             fov_x_deg=req.fov_x_deg,
             fov_y_deg=req.fov_y_deg,
             boresight_body=boresight_body,
+            satellite_id=req.satellite_id,
         )
         samples.append(
             CameraRaySample(
@@ -157,6 +159,7 @@ def _compute_footprint_track(req: CameraRayTrackRequest) -> list[tuple[datetime,
                 fov_x_deg=req.fov_x_deg,
                 fov_y_deg=req.fov_y_deg,
                 boresight_body=boresight_body,
+                satellite_id=req.satellite_id,
             ),
         )
         for ts_dt, pos, quat in _load_real_telemetry_samples(req)
@@ -201,6 +204,7 @@ def _compute_line_track(req: LineTrackRequest) -> list[tuple[datetime, dict]]:
                 utc_datetime=ts_dt,
                 fov_across_deg=req.fov_across_deg,
                 boresight_body=boresight_body,
+                satellite_id=req.satellite_id,
             ),
         )
         for ts_dt, pos, quat in _load_real_telemetry_samples(req)
