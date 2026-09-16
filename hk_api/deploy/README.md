@@ -1,21 +1,48 @@
 # Deploying to a test server (e.g. 192.168.0.82:8080)
 
-Run these steps **on the target server itself** over SSH - this cannot be done remotely from a
-dev machine, since it needs that server's own filesystem/Docker/credentials.
+**Goal:** run `hk_api` as its own standalone, network-reachable API - not just embedded/proxied
+inside `attitude-viewer`'s Flask process (`HK_API_BASE_URL` -> `/api/hk/*` today). Same pattern
+`attitude-viewer` itself already uses in production: it's reachable at
+`http://192.168.1.61:8080/sat_footprint/viewer?satellite=O1B` - a dedicated path added behind an
+existing shared `:8080` entry point, not its own port exposed to the internet. This doc sets up
+`hk_api` the same way, behind `192.168.0.82:8080`, at whatever new path you pick (`/sat-api/`
+below - rename freely, just keep it consistent across the reverse-proxy config and any caller).
 
-192.168.0.82 is the team's shared dev server. **The public entry point stays `:8080`** - that's
-already the EP (Event Planner) server (AOI/Mission/TLE API - see
-`docs/ep-server-api-reference.txt` in the `sat_footprint` DEM-server repo), so
-`sat_simulation_api` does not bind to `0.0.0.0:8080` itself. Instead it runs on
-`127.0.0.1:8081` (not reachable from outside directly) and is exposed to the outside world
-through a path added to whatever already fronts port 8080 - see "Reverse proxy setup" below.
+## Checklist (Option A / Docker, end to end)
 
-```bash
-ssh <user>@192.168.0.82
-git clone https://github.com/seoyoon-space/sat_footprint.git
-cd sat_footprint
-git checkout doeun-space
-```
+Run all of this **on the target server itself** over SSH - it needs that server's own
+filesystem/Docker/credentials, so it can't be done remotely from a dev machine.
+
+1. `ssh <user>@192.168.0.82`
+2. `git clone https://github.com/seoyoon-space/sat_footprint.git && cd sat_footprint/hk_api`
+3. `HOST_PORT=8081 bash deploy/deploy.sh` - first run only creates `.env`/`config/satellites.toml`
+   from the `*.example` templates and exits (see step 4)
+4. Fill in real values in `.env` (`MYSQL_*`, `API_KEY`, `CORS_ALLOWED_ORIGINS`) and
+   `config/satellites.toml` if per-satellite DB profiles are needed - **never commit either file**
+5. `HOST_PORT=8081 bash deploy/deploy.sh` again - builds the image, starts the container
+   (`--restart unless-stopped`), and runs a local health check itself
+6. Confirm locally: `curl -sf http://127.0.0.1:8081/health` -> `{"status":"ok"}`
+7. **Find what currently serves `192.168.0.82:8080`** (the EP server) - e.g. `sudo ss -tlnp |
+   grep :8080` or `ps aux | grep -iE 'nginx|caddy|iis'` - this is server-specific and not
+   something this repo can know in advance; ask whoever manages the EP server if unclear
+8. Add the reverse-proxy route for that server (nginx example and other-proxy notes below), then
+   reload/restart it (e.g. `sudo nginx -t && sudo systemctl reload nginx`)
+9. Confirm externally, from another machine: `curl http://192.168.0.82:8080/sat-api/health`
+10. On the `attitude-viewer` side, point `HK_API_BASE_URL` at `http://192.168.0.82:8080/sat-api`
+    and restart that service - it now calls `hk_api` as a standalone API instead of a locally-run
+    process (see "After either option" below)
+
+Steps 3-6 are Option A (Docker); swap in Option B (systemd) below if Docker isn't available on
+that server. The rest of this document covers each step's detail and troubleshooting.
+
+**Why `:8080` stays untouched:** 192.168.0.82's public entry point `:8080` is already the EP
+(Event Planner) server (AOI/Mission/TLE API - see `docs/ep-server-api-reference.txt` in the
+`sat_footprint` DEM-server repo), so `sat_simulation_api` binds to `127.0.0.1:8081` (not directly
+reachable from outside) instead of `0.0.0.0:8080`, and reaches the outside world only through the
+reverse-proxy path added in step 7-8 (details in "Reverse proxy setup" below).
+
+Everything below (`deploy/deploy.sh`, `deploy/sat-simulation-api.service`, `.env`, etc.) is
+relative to the `hk_api/` folder cloned in step 2, not the `sat_footprint` repo root.
 
 ## Option A - Docker (recommended)
 
@@ -36,7 +63,7 @@ cp .env.example .env && cp config/satellites.example.toml config/satellites.toml
 # fill in .env / config/satellites.toml with real values
 
 sudo cp deploy/sat-simulation-api.service /etc/systemd/system/
-sudo sed -i "s#/opt/sat_footprint#$(pwd)#" /etc/systemd/system/sat-simulation-api.service
+sudo sed -i "s#/opt/sat_footprint/hk_api#$(pwd)#" /etc/systemd/system/sat-simulation-api.service
 sudo sed -i "s#__USER__#$(whoami)#" /etc/systemd/system/sat-simulation-api.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now sat-simulation-api
@@ -95,10 +122,13 @@ curl http://192.168.0.82:8080/sat-api/health
 ```
 
 The DEM server then calls `http://192.168.0.82:8080/sat-api/...` directly - no proxy needed on
-its side. If it fetches from a browser context instead of server-to-server, its origin
-(`http://192.168.0.82:8080` - the origin is scheme+host+port, the `/sat-api` path doesn't
-matter for CORS) must be added to `CORS_ALLOWED_ORIGINS` in `.env` (see main `README.md` → CORS
-section).
+its side. This replaces `attitude-viewer`'s current internal proxy (`HK_API_BASE_URL` ->
+`/api/hk/*`, calling a locally-run `hk_api` process): once this deployment is up, point
+`HK_API_BASE_URL` at `http://192.168.0.82:8080/sat-api` instead, so `hk_api` is called as a
+standalone API rather than a process `attitude-viewer` has to run alongside itself. If it fetches
+from a browser context instead of server-to-server, its origin (`http://192.168.0.82:8080` - the
+`/sat-api` path doesn't matter for CORS) must be added to `CORS_ALLOWED_ORIGINS` in `.env` (see
+main `README.md` → CORS section).
 
 If port 8081 on the server turns out to already be taken too, override it at deploy time with
 `HOST_PORT=<port> bash deploy/deploy.sh` (Option A) or the `--port` flag in the unit file

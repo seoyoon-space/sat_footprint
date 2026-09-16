@@ -122,6 +122,58 @@ def test_telemetry_query_uses_real_canonical_field_names(fake_loader):
     assert record["eigen_err"] == 5.0
 
 
+class _RecordingLoader:
+    """load()에 실제로 전달된 kwargs를 기록 - invert_quaternion_direction이 요청 필드에서
+    loader.load() 호출까지 제대로 전달되는지 검증하는 용도(값 자체의 방향반전 로직은
+    tests/test_loader.py에서 이미 검증됨)."""
+
+    last_kwargs: dict | None = None
+
+    def load(self, **kwargs):
+        _RecordingLoader.last_kwargs = kwargs
+        return _fake_hk_dataframe()
+
+
+def test_telemetry_query_defaults_to_inverted_quaternion(monkeypatch):
+    monkeypatch.setattr(routes, "_get_loader", lambda satellite_id: _RecordingLoader())
+    resp = client.post(
+        "/telemetry/query",
+        json={"satellite_id": "O1A", "start_time": "2026-08-20T00:00:00Z", "end_time": "2026-08-20T00:00:02Z"},
+    )
+    assert resp.status_code == 200
+    assert _RecordingLoader.last_kwargs["invert_quaternion_direction"] is True
+
+
+def test_telemetry_query_can_request_uninverted_quaternion(monkeypatch):
+    monkeypatch.setattr(routes, "_get_loader", lambda satellite_id: _RecordingLoader())
+    resp = client.post(
+        "/telemetry/query",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "invert_quaternion_direction": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert _RecordingLoader.last_kwargs["invert_quaternion_direction"] is False
+
+
+def test_telemetry_czml_can_request_uninverted_quaternion(monkeypatch):
+    monkeypatch.setattr(czml_routes, "_get_loader", lambda satellite_id: _RecordingLoader())
+    resp = client.post(
+        "/telemetry/czml",
+        json={
+            "satellite_id": "O1A",
+            "start_time": "2026-08-20T00:00:00Z",
+            "end_time": "2026-08-20T00:00:02Z",
+            "invert_quaternion_direction": False,
+        },
+    )
+    assert resp.status_code == 200
+    assert _RecordingLoader.last_kwargs["invert_quaternion_direction"] is False
+
+
 def test_telemetry_czml_positions_are_populated_with_real_field_names(fake_loader):
     resp = client.post(
         "/telemetry/czml",

@@ -11,6 +11,11 @@ class TelemetryQueryRequest(BaseModel):
     end_time: datetime | str = Field(..., description="조회 종료 시각 (KST 또는 UTC, 예: 2026-08-20 또는 2026-08-20T23:59:59+09:00)")
     merge_tolerance_sec: float = Field(1.0, description="HK 패킷 병합 시 asof 허용 오차(초)")
     interpolate_gaps: bool = Field(True, description="결측 구간 시간 기반 선형보간 여부")
+    invert_quaternion_direction: bool = Field(
+        True,
+        description="qbody_wrt_eci1..4를 이 프로젝트의 Body->ECI 방향으로 뒤집을지 여부. "
+        "기본 True. Orekit/Rugged 기반 소비자는 False가 필요 - README Quaternion semantics 참고.",
+    )
 
 
 class TelemetryRecord(BaseModel):

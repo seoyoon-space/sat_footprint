@@ -41,6 +41,7 @@ def czml_telemetry(
             satellite_id=req.satellite_id,
             merge_tolerance_sec=req.merge_tolerance_sec,
             interpolate_gaps=req.interpolate_gaps,
+            invert_quaternion_direction=req.invert_quaternion_direction,
         )
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e)) from e
