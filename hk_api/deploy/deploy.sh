@@ -2,8 +2,7 @@
 #
 # 사용법:
 #   ssh <user>@192.168.0.82
-#   git clone https://github.com/seoyoon-space/sat_footprint.git && cd sat_footprint
-#   git checkout doeun-space
+#   git clone https://github.com/seoyoon-space/sat_footprint.git && cd sat_footprint/hk_api
 #   bash deploy/deploy.sh
 #
 # .env / config/satellites.toml에 실제 값이 안 채워져 있으면 실행을 멈추고 안내만 하고 끝남

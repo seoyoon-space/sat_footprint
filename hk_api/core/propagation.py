@@ -2,7 +2,7 @@
 
 core의 나머지 부분과 달리 검증된 외부 패키지(sgp4)를 사용. 결과는 TEME 프레임
 위치[km]/속도[km/s] - core.coordinates의 ECI와는 엄밀히 다른 준거계지만 차이가
-수십 각초 수준이라 실무 관행대로 TEME=ECI로 취급한다.
+수십 각초 수준이라 실무 관행대로 TEME=ECI로 취급.
 """
 from __future__ import annotations
 
@@ -28,7 +28,7 @@ class PropagatedState:
 def load_tle(line1: str, line2: str) -> Satrec:
     """TLE 두 줄을 파싱해서 sgp4 Satrec 객체 생성.
 
-    중력상수는 표준 TLE 배포 관례(NORAD)에 맞춰 WGS-72를 사용.
+    중력상수는 표준 TLE 배포 관례(NORAD)에 맞춰 WGS-72 사용.
     """
     if not line1.startswith("1 ") or not line2.startswith("2 "):
         raise TleError("Invalid TLE lines: line1 must start with '1 ' and line2 with '2 '")

@@ -203,9 +203,7 @@ def _apparent_sidereal_time_rad(utc_datetime: datetime, delta_psi: float, mean_e
 def _precession_nutation_for_date(date_key: date):
     """세차/장동 행렬 + 장동각을 UTC 날짜 단위로 캐시.
 
-    세차는 약 50"/year(~0.14"/day), 장동의 지배항은 약 17"의 진폭을 18.6년 주기로
-    그리므로 하루 내 변화는 <= 약 0.02"/day 수준. 반면 GMST는
-    지구 자전으로 초당 약 15"를 움직이므로, 항상 타임스탬프마다 재계산(_earth_orientation_matrices 참고).
+    GMST는 지구 자전으로 초당 약 15"를 움직이므로, 항상 타임스탬프마다 재계산(_earth_orientation_matrices 참고).
     날짜 단위 캐싱으로 추가되는 오차(<= 하루치 세차/장동 변화량)는 GMST 자체가 이미 갖고 있는
     UT1-UTC 미보정 오차(<= 약 13.5", earth_rotation_angle_rad 참고)보다 훨씬 작아
     전체 정확도에 실질적 영향 없음. 
@@ -253,9 +251,9 @@ def eci_to_ecef_rotation_quaternion(utc_datetime: datetime) -> Quaternion:
 def eci_to_ecef(vec_eci, utc_datetime: datetime) -> Vector3:
     """ECI(GCRF/J2000 평균 적도/분점) 벡터 -> ECEF(ITRF 근사) 벡터.
 
-    IAU-76/FK5 축약 모델(세차 + 장동(저정밀도) + 겉보기항성시)을 적용한다. 극운동(polar
+    IAU-76/FK5 축약 모델(세차 + 장동(저정밀도) + 겉보기항성시)을 적용. 극운동(polar
     motion)은 IERS 관측치가 없어 생략(영향 < 0.1"로 무시 가능). 잔여오차는 주로
-    UT1-UTC 미보정(<= 약 13.5")에서 오며, LEO(~700km) 환산 시 지상 오차 <= 수십 m 수준이다.
+    UT1-UTC 미보정(<= 약 13.5")에서 오며, LEO(~700km) 환산 시 지상 오차 <= 수십 m 수준.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)

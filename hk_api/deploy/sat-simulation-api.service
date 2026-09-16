@@ -1,8 +1,11 @@
 # Docker 없이 uvicorn을 직접 systemd로 상시 구동하고 싶을 때 사용하는 유닛 파일.
 #
-# 설치:
+# 이 파일이 가리키는 경로는 sat_footprint 저장소가 아니라 그 안의 hk_api/ 폴더다
+# (예: sat_footprint를 /opt/sat_footprint에 clone했다면 hk_api는 /opt/sat_footprint/hk_api).
+#
+# 설치 (hk_api/ 안에서 실행):
 #   sudo cp deploy/sat-simulation-api.service /etc/systemd/system/
-#   sudo sed -i "s#/opt/sat_footprint#$(pwd)#" /etc/systemd/system/sat-simulation-api.service
+#   sudo sed -i "s#/opt/sat_footprint/hk_api#$(pwd)#" /etc/systemd/system/sat-simulation-api.service
 #   sudo sed -i "s#__USER__#$(whoami)#" /etc/systemd/system/sat-simulation-api.service
 #   sudo systemctl daemon-reload
 #   sudo systemctl enable --now sat-simulation-api
@@ -19,9 +22,9 @@ After=network.target
 [Service]
 Type=simple
 User=__USER__
-WorkingDirectory=/opt/sat_footprint
-EnvironmentFile=/opt/sat_footprint/.env
-ExecStart=/opt/sat_footprint/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8081
+WorkingDirectory=/opt/sat_footprint/hk_api
+EnvironmentFile=/opt/sat_footprint/hk_api/.env
+ExecStart=/opt/sat_footprint/hk_api/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8081
 Restart=on-failure
 RestartSec=5
 

@@ -32,10 +32,12 @@ below for the field-level contract.
 
 ## Getting the code
 
+`hk_api` is vendored into the `sat_footprint` monorepo's `main` branch (alongside `attitude-viewer`,
+`footprint-backend`) - clone that and `cd` into this subfolder:
+
 ```bash
 git clone https://github.com/seoyoon-space/sat_footprint.git
-cd sat_footprint
-git checkout doeun-space
+cd sat_footprint/hk_api
 ```
 
 ## Setup

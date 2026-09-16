@@ -1,6 +1,6 @@
 ﻿"""HK 텔레메트리 로더 - 라이브러리(HKLoader) + CLI 겸용.
 
-설치/환경변수/CLI 예시/시간 입력 형식은 README를 참고 (여기 문서는 코드 계약만 다룸).
+설치/환경변수/CLI 예시/시간 입력 형식은 README 참고 (여기 문서는 코드 계약만 다룸).
 빠른 예시: `python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output hk.csv`
 """
 from __future__ import annotations
@@ -78,10 +78,9 @@ def _build_tolerance_overrides(
 ) -> dict[str, float]:
     """패킷별 asof-merge 허용 오차를 PacketSpec.rate_hz로부터 계산.
 
-    송신 주기가 느린 패킷은 허용 오차도 그만큼 넓혀야 매칭 실패로 인한 불필요한
-    NaN을 피할 수 있다. 패킷 주기(1/rate_hz)의 절반을 자연스러운 최소 허용 오차로
-    보고, 사용자가 지정한 merge_tolerance_sec보다 더 넓게 필요한 패킷에 한해서만
-    override한다(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
+    패킷 주기(1/rate_hz)의 절반을 자연스러운 최소 허용 오차로 보고, 
+    사용자가 지정한 merge_tolerance_sec보다 더 넓게 필요한 패킷에 한해서만
+    override.(즉 merge_tolerance_sec을 하한으로 취급 -> 절대 더 좁아지지 않음).
     """
     return {
         name: max(merge_tolerance_sec, 0.5 / schema[name].rate_hz)
@@ -107,7 +106,7 @@ def _reorder_scalar_last_quaternions(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # qbody_wrt_eci1..4는 실제로 ECI->Body 회전(DEM 서버가 conjugate로 뒤집어 쓰는 것으로 확인됨) -
-# 이 프로젝트는 Body->ECI를 가정하므로(quaternion_body2eci), 여기서 켤레를 취해 뒤집는다.
+# Body->ECI를 가정하므로(quaternion_body2eci), 여기서 켤레를 취해 뒤집는다.
 # scalar-first로 이미 재정렬된 뒤 호출되므로, w(col1)는 두고 x,y,z(col2~4) 부호만 뒤집으면 된다.
 def _invert_quaternion_rotation_direction(df: pd.DataFrame) -> pd.DataFrame:
     for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
@@ -608,14 +607,6 @@ def _sanitize_value(v: Any) -> Any:
 
 def df_to_czml(df: pd.DataFrame, *, id_prefix: str = "hk", time_col: str = "time") -> list:
     """Convert a merged HK DataFrame to a CZML list suitable for saving as a .czml file.
-
-    Strategy:
-    - Produce a top-level document packet {id: 'document', version: '1.0'}
-    - For each row produce a packet with a unique id and a 'time' property (ISO8601 UTC)
-    - All other columns are added as custom properties (sanitized for JSON)
-
-    This produces a simple CZML that a Cesium app can ingest; time-dynamic properties are
-    represented as separate packets at different times.
     """
     columns = list(df.columns)
     time_pos = columns.index(time_col)
