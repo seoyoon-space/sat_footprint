@@ -167,7 +167,17 @@ def _load_attitude_or_error(satellite, start, end):
     try:
         resp = requests.post(
             f"{HK_API_BASE_URL}/telemetry/query",
-            json={"satellite_id": satellite, "start_time": start, "end_time": end},
+            json={
+                "satellite_id": satellite,
+                "start_time": start,
+                "end_time": end,
+                # hk_api's own default (True) applies its own project's quaternion-direction
+                # convention; Orekit/Rugged/CZML (this app's consumers) need the opposite —
+                # verified independently by both sides via real-target A/B tests (hk_api's
+                # README cites ~1.8km, ours 1.756km match). hk_api exposes this flag on
+                # /telemetry/query precisely for callers like us (added on request).
+                "invert_quaternion_direction": False,
+            },
             timeout=60,
         )
     except requests.RequestException as exc:
@@ -190,12 +200,6 @@ def _load_attitude_or_error(satellite, start, end):
     if missing:
         return None, f"hk_api 응답에 필요한 컬럼이 없습니다: {missing}"
 
-    # hk_api의 core/loader/hk_loader.py(_fetch_packet)는 qbody_wrt_eci1..4를 scalar-first로
-    # 재정렬만 하고(방향은 뒤집지 않음) 내보낸다 — 그 상태가 이미 Body->ECI라는 게 실측
-    # 확인됨(A/B 테스트: Java/Rugged 파이프라인 + hk_api 자체 ECI->ECEF 합성 둘 다, 뒤집으면
-    # 지구조차 안 보는 방향이 나오고 안 뒤집어야 실제 타겟 근처로 나옴 — hk_api 쪽
-    # _invert_quaternion_rotation_direction() 호출 자체를 빼서 고침, core/loader/hk_loader.py
-    # 참고). 그래서 여기서는 추가 반전 없이 그대로 쓴다.
     att = pd.DataFrame({
         "timestamp": pd.to_datetime(raw["time"], utc=True),
         "px": raw["pos_wrt_eci1"].astype(float),
@@ -229,7 +233,15 @@ def _load_attitude_ecef_or_error(satellite, start, end):
         resp = requests.post(
             f"{HK_API_BASE_URL}/telemetry/czml",
             params={"coordinate_frame": "ecef", "include_pointing": "false"},
-            json={"satellite_id": satellite, "start_time": start, "end_time": end},
+            json={
+                "satellite_id": satellite,
+                "start_time": start,
+                "end_time": end,
+                # Same convention translation as _load_attitude_or_error — must be set
+                # here too since hk_api applies its own-convention flip before composing
+                # the ECI->ECEF rotation, so there's no way to undo it after the fact.
+                "invert_quaternion_direction": False,
+            },
             timeout=60,
         )
     except requests.RequestException as exc:
@@ -366,11 +378,9 @@ def api_czml():
     if abs(pos_km[0, 0]) > 100_000:
         pos_km = pos_km / 1000.0
 
-    # extract_attitude_columns outputs scalar-first: q0=w, q1=x, q2=y, q3=z.
-    # Reindex to scalar-last (x,y,z,w) for build_mission_hk/czml_generator — no sign
-    # flip needed (verified empirically: an actual ECI<->Body flip here breaks the
-    # Java/Rugged footprint pipeline outright, confirming our stored quaternion is
-    # already in the direction both consumers expect).
+    # att's q0..q3 (scalar-first: q0=w, q1=x, q2=y, q3=z) are already the corrected
+    # direction (the hk_api-convention flip was undone in _load_attitude_or_error) —
+    # just reindex to scalar-last (x,y,z,w) for build_mission_hk/czml_generator.
     q_scalar_last = att[["q1", "q2", "q3", "q0"]].values.astype(float)
 
     mission_hk = build_mission_hk(timestamps_unix, pos_km, q_scalar_last)
