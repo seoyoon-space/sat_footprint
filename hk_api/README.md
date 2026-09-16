@@ -4,48 +4,31 @@ HK telemetry loader and API for querying spacecraft housekeeping (HK) packets fr
 
 ## Overview
 
-This project loads housekeeping data from the real DB layout used in the target system:
+Loads housekeeping data from the real DB layout:
 
-- Schema: `nstanl` (shared by O1A and O1B - they are **not** separate DB instances)
-- Tables: `tbl_obs1a_hk1..hk6` for O1A, `tbl_obs1b_hk1..hk6` for O1B - table prefix only,
-  selected by the `satellite_id` argument (see [Schema map](#schema-map))
-- Time column: `timeUtc`
-- Time unit: Unix epoch seconds (UTC)
-- Position unit: the raw DB stores `posWrtEci1..3`/`velWrtEci1..3` in kilometers
-  (kilometers/second) - `HKLoader._fetch_packet()` converts to meters (meters/second) at load
-  time, so `pos_wrt_eci1..3`/`vel_wrt_eci1..3` are always meters/meters-per-second by the time
-  they reach `core/` or the API (see [Schema map](#schema-map))
+- Schema `nstanl`, shared by O1A/O1B (**not** separate DB instances) - tables
+  `tbl_obs1a_hk1..hk6`/`tbl_obs1b_hk1..hk6`, prefix picked by `satellite_id` (see [Schema map](#schema-map))
+- Time column `timeUtc`, Unix epoch seconds (UTC)
+- Position/velocity: raw DB is km(/s); converted to m(/s) at load time
 
-Users can provide KST or UTC timestamps in friendly formats such as:
+Accepts KST or UTC timestamps in several formats (`2026-08-20`, `2026-08-20T15:00:00+09:00`,
+`2026-08-20T00:00:00Z`, epoch seconds) and normalizes everything to UTC internally.
 
-- `2026-08-20`
-- `2026-08-20T15:00:00+09:00`
-- `2026-08-20T00:00:00Z`
-- `1787203236`
+## Two calling modes
 
-The loader converts those inputs into UTC epoch seconds for DB queries and normalizes the merged output to a standard `time` column in the DataFrame.
+Pick one per caller/endpoint, depending on whether `core/coordinates.py`'s ECI-to-ECEF
+composition should run on the data:
 
-## Two calling modes - don't let this project's coordinate math collide with a Cesium-based host's own
+- **Standalone** - trust this project's coordinate math end-to-end (ECI-to-ECEF for
+  position+attitude, Cesium-ready `FIXED`-frame CZML). `POST /telemetry/czml`, or embed
+  `core/coordinates.py::build_cesium_track_czml()`. **This is DEM's current CZML setup.**
+- **Embedded-in-a-Cesium-host** - caller runs its own coordinate pipeline (Cesium/Orekit
+  conventions, e.g. a Java/Orekit/Rugged terrain-footprint pipeline). Get ECI data as-is via
+  `POST /telemetry/mission-hk`, or embed `HKLoader.load(..., invert_quaternion_direction=False)`
+  without routing through `core/coordinates.py` (double-transform otherwise).
 
-Pick one per caller/endpoint - it decides whether `core/coordinates.py`'s ECI-to-ECEF composition
-should run on that data at all:
-
-- **Standalone mode** - trust this project's coordinate computation end-to-end.
-  `core/coordinates.py` composes ECI-to-ECEF for position and attitude and returns Cesium-ready,
-  `FIXED`-frame CZML. HTTP: `POST /telemetry/czml`. Embedded: call
-  `core/coordinates.py::build_cesium_track_czml()` directly. **This is DEM's `sat_footprint`
-  server's current setup for CZML visualization.**
-- **Embedded-in-a-Cesium-host mode** - for a caller running its own coordinate-transform pipeline
-  on Cesium/Orekit conventions instead (e.g. a `czml_generator.py`-style CZML generator, or a
-  Java/Orekit/Rugged terrain-footprint pipeline). Hand this caller ECI data as-is - running
-  `core/coordinates.py`'s ECI-to-ECEF composition on top of its own would double-transform the data
-  or hand it the wrong frame shape. HTTP: `POST /telemetry/mission-hk`. Embedded: call
-  `HKLoader.load(..., invert_quaternion_direction=False)` and pass the result straight through,
-  without routing it through `core/coordinates.py`.
-
-Both read from the same `HKLoader` output - only the downstream serialization differs (see
-"Quaternion semantics" and "DEM server export format" below for the field-level contract), so a
-caller can pick either endpoint per request without the two colliding.
+Both read the same `HKLoader` output - see "Quaternion semantics" and "DEM server export format"
+below for the field-level contract.
 
 ## Getting the code
 
@@ -106,51 +89,33 @@ Important:
 
 ## Schema map
 
-`core/loader/schema_map.py::get_hk_packet_schema(satellite_id)` picks the table prefix from
-`satellite_id`:
+`core/loader/schema_map.py::get_hk_packet_schema(satellite_id)` picks the table prefix:
 
-- `satellite_id="O1A"` (or `None`, the default) -> `nstanl.tbl_obs1a_hk1..hk6`
+- `satellite_id="O1A"` (or `None`, default) -> `nstanl.tbl_obs1a_hk1..hk6`
 - `satellite_id="O1B"` -> `nstanl.tbl_obs1b_hk1..hk6`
 
-**`satellite_id` must be passed through to `HKLoader.load(..., satellite_id=...)` itself**, not
-just to `HKLoader.for_satellite(...)`/the connection constructor - the latter only picks DB
-*connection* info (currently identical for O1A/O1B, since they share one DB), while
-`load()`'s own `satellite_id` argument is what selects the *table prefix*. Passing it to one but
-not the other silently queries O1A's tables regardless of which satellite was asked for - this
-was a real bug in this project earlier and is easy to reintroduce when copying the loader
-elsewhere, so double-check both call sites agree.
+**Pass `satellite_id` to `HKLoader.load(..., satellite_id=...)` itself**, not just to
+`HKLoader.for_satellite(...)` - the latter only picks DB *connection* info (identical for
+O1A/O1B today), while `load()`'s own argument selects the *table prefix*. Missing one silently
+queries O1A regardless of what was asked - a real bug here before, easy to reintroduce elsewhere.
 
-The master packet is `hk1`. Column names (canonical, e.g. `qbody_wrt_eci1..4`) are identical
-between O1A and O1B - only the table prefix differs.
+Master packet is `hk1`; canonical column names (e.g. `qbody_wrt_eci1..4`) are identical between
+O1A/O1B, only the table prefix differs. Time: DB field `timeUtc`, Unix epoch seconds (UTC);
+output DataFrame has a standard `time` column (UTC-aware pandas timestamps).
 
-Time semantics:
+**Quaternion semantics:** raw DB `qbody_wrt_eci1..4` is scalar-last (x,y,z,w), ECI-to-Body. This
+project expects Body-to-ECI, scalar-first (`quaternion_body2eci`), so `HKLoader._fetch_packet()`
+reorders (x,y,z,w -> w,x,y,z) then inverts (conjugate) at the loading boundary. Only
+`qbody_wrt_eci1..4` is touched - `q_ecef_wrt_eci1..4`/`cmd_q_body_wrt_eci1..4` are unconfirmed/unused.
 
-- DB field: `timeUtc`
-- Unit: Unix epoch seconds (UTC)
-- User-facing input: KST or UTC strings are accepted and internally normalized
-- Output DataFrame: standard `time` column in UTC-aware pandas timestamps
+**The direction flip is this project's own convention, not universal** - DEM's Orekit/Rugged
+pipeline needs the opposite direction (a Rotation-convention difference, confirmed via real
+target-coordinate testing, not a bug). `HKLoader.load(..., invert_quaternion_direction=False)`
+skips just the flip (reorder + meters conversion still apply) - see
+["Two calling modes"](#two-calling-modes) and "DEM server export format" below.
 
-Quaternion semantics: the raw DB `qbody_wrt_eci1..4` is scalar-last (x,y,z,w) and represents an
-ECI-to-Body rotation. This project's coordinate/footprint code expects Body-to-ECI, scalar-first
-(the `quaternion_body2eci` naming throughout `core/coordinates.py`/`core/geometry/footprint.py`),
-so `HKLoader._fetch_packet()` applies two corrections at the loading boundary:
-`_reorder_scalar_last_quaternions` (x,y,z,w -> w,x,y,z), then
-`_invert_quaternion_rotation_direction` (conjugate: negate x,y,z, keep w). This applies only to
-`qbody_wrt_eci1..4`; `q_ecef_wrt_eci1..4`/`cmd_q_body_wrt_eci1..4` share the naming pattern but are
-unconfirmed and unused, so neither correction touches them.
-
-**The direction flip is this project's own convention, not universal** - DEM's `sat_footprint`
-server (Orekit/Rugged) ported this loader and, via real target-coordinate testing, found it needs
-the *opposite* direction (an Orekit `Rotation` convention difference, not a bug on either side).
-`HKLoader.load(..., invert_quaternion_direction=False)` skips just this flip (reorder and the
-meters conversion below still apply) for that kind of consumer - see
-["Two calling modes"](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own)
-above and "DEM server export format" below.
-
-Position/velocity units: the raw DB `posWrtEci1..3`/`velWrtEci1..3` are kilometers
-(kilometers/second); `HKLoader._fetch_packet()` converts to meters (`_convert_km_to_m`) at the same
-loading boundary, so `core/` and the API always see meters/meters-per-second - `core/coordinates.py`'s
-WGS-84 constants and every ellipsoid/footprint calculation assume meters throughout.
+**Position/velocity units:** raw DB is km(/s); `_convert_km_to_m` converts to m(/s) at the same
+loading boundary, so `core/`/the API always see meters (WGS-84 constants assume meters throughout).
 
 ## Python usage
 
@@ -201,11 +166,9 @@ df = loader.load(
 
 ### Embedding `core/` directly in another project (no HTTP, no `config.py` required)
 
-`core/loader/hk_loader.py`, `schema_map.py`, and `time_sync.py` have no dependency on `api/` or
-FastAPI, and `HKLoader(connection_url=...)` doesn't need `config.py` on the path at all - only
-the `from_env()`/`for_satellite()` classmethods lazily import it, so a caller that already has
-its own connection string (or its own settings module) can drop just those three files into
-another codebase and use them standalone, e.g.:
+`hk_loader.py`/`schema_map.py`/`time_sync.py` have no `api/`/FastAPI dependency, and
+`HKLoader(connection_url=...)` needs no `config.py` at all (only `from_env()`/`for_satellite()`
+lazily import it) - drop just those three files into another codebase to use standalone:
 
 ```python
 from core.loader import HKLoader
@@ -216,9 +179,7 @@ df = loader.load(start_time="2026-08-20", end_time="2026-08-21", satellite_id="O
 
 The rest of `core/` (`coordinates.py`, `geometry/footprint.py`, `math_utils/quat.py`,
 `propagation.py`, `validator/ops_rules.py`) is equally self-contained (stdlib + pandas/numpy
-only, no `api/` imports) if a consumer wants the coordinate/footprint/validator logic too
-instead of just the loader. The same code is also available as the HTTP API below - both usage
-modes read from the same source, so a fix in one mode is a fix in the other.
+only) for the coordinate/footprint/validator logic. Same source backs the HTTP API below.
 
 ## CLI usage
 
@@ -331,16 +292,15 @@ curl -H "X-API-Key: your_api_key" http://localhost:8000/telemetry/query ...
 
 ### CORS
 
-If a frontend (e.g. a Cesium viewer) fetches this API directly from the browser, set
-`CORS_ALLOWED_ORIGINS` in `.env` to a comma-separated list of allowed origins:
+If a browser frontend (e.g. a Cesium viewer) fetches this API directly, set
+`CORS_ALLOWED_ORIGINS` in `.env` to a comma-separated allowlist:
 
 ```env
 CORS_ALLOWED_ORIGINS=https://dem.example.com,http://localhost:5173
 ```
 
-If unset (default), no cross-origin browser request is allowed - server-to-server calls (e.g.
-a DEM server proxying the request on the backend) are unaffected either way, since CORS is a
-browser-enforced restriction, not a server-side one.
+Unset (default) blocks all cross-origin browser requests; server-to-server calls are unaffected
+either way (CORS is browser-enforced, not server-side).
 
 Query telemetry:
 
@@ -381,12 +341,11 @@ print(resp.json())
 
 ### DEM server export format (`mission_hk`)
 
-HTTP form of [Embedded-in-a-Cesium-host mode](#two-calling-modes---dont-let-this-projects-coordinate-math-collide-with-a-cesium-based-hosts-own) - for a consumer running its own coordinate math
-(e.g. DEM's Java/Orekit/Rugged terrain-footprint pipeline; DEM's own CZML *visualization* has since
-moved to `/telemetry/czml` instead, see "Two calling modes" above). Returns the same
-position/attitude as `/telemetry/query`, shaped as column arrays with DEM's `czml_generator.py`
-field names (`taiSeconds`, `posWrtEci1..3`, `qbodyWrtEci1..4`) so a consumer already built against
-that shape needs no renaming:
+HTTP form of [Embedded-in-a-Cesium-host mode](#two-calling-modes) - for a consumer running its
+own coordinate math (e.g. DEM's Java/Orekit/Rugged pipeline; DEM's CZML *visualization* itself
+now uses `/telemetry/czml` instead). Same position/attitude as `/telemetry/query`, shaped as
+column arrays with DEM's `czml_generator.py` field names (`taiSeconds`, `posWrtEci1..3`,
+`qbodyWrtEci1..4`) so an existing consumer needs no renaming:
 
 ```bash
 curl -X POST "http://localhost:8000/telemetry/mission-hk" \
@@ -398,16 +357,12 @@ curl -X POST "http://localhost:8000/telemetry/mission-hk" \
   }'
 ```
 
-- `posWrtEci1..3` are **meters** - if feeding `czml_generator.py::generate_czml()` (via
-  `build_mission_hk()`), which still expects km and applies its own `* 1000.0`, divide by 1000
-  first, or keep `sat_footprint/attitude-viewer/app.py::api_czml`'s existing km/m auto-detection
-  guard, which already handles this correctly.
-- `qbodyWrtEci1..4` is scalar-last, **without** this project's Body-to-ECI flip (see "Quaternion
-  semantics" above) - the direction DEM's Orekit/Rugged pipeline needs, so no further
-  conjugate/reorder is needed downstream. This is also why `sat_footprint`'s own
-  `app.py::_load_attitude_or_error()` re-negates `q1,q2,q3` by hand after calling
-  `extract_attitude_columns()` - that manual step becomes unnecessary for a caller that uses
-  `invert_quaternion_direction=False` (or this endpoint) directly instead.
+- `posWrtEci1..3` are **meters** - `czml_generator.py::generate_czml()` (via `build_mission_hk()`)
+  still expects km and applies `* 1000.0`, so divide by 1000 first (or rely on
+  `attitude-viewer/app.py::api_czml`'s existing km/m auto-detection guard).
+- `qbodyWrtEci1..4` is scalar-last, **without** the Body-to-ECI flip (see "Quaternion semantics")
+  - the direction DEM's Orekit/Rugged pipeline needs, so no further conjugate is needed
+  downstream (a caller using `invert_quaternion_direction=False` gets the same result directly).
 
 CZML ground track + attitude (loads directly into a `Cesium.CzmlDataSource`):
 
@@ -435,19 +390,14 @@ curl -X POST "http://localhost:8000/footprint/compute" \
   }'
 ```
 
-Returns a GeoJSON `FeatureCollection` (footprint polygon + boresight center point).
+Returns a GeoJSON `FeatureCollection` (footprint polygon + boresight center point). Same body
+works against `POST /footprint/czml` for a CZML packet list instead (polygon + boresight point)
+- load alongside `/telemetry/czml` to show ground track and camera coverage together.
 
-Same request body works against `POST /footprint/czml` for a Cesium-loadable CZML packet
-list instead (a `polygon` packet for the footprint + a `point` packet for the boresight
-center) - load it alongside `/telemetry/czml`'s output to show ground track and camera
-coverage in the same viewer.
-
-Both `/footprint/compute` and `/footprint/czml` intersect the camera ray against a smooth
-WGS-84 ellipsoid (no terrain). If the caller already has a precise terrain/DEM model and
-just needs the ray itself, use `POST /footprint/rays` instead - given a satellite/time
-range it loads real HK telemetry (position + attitude) and returns, per timestamp, the
-ECEF ray origin and the boresight + 4 FOV-corner unit direction vectors, with no ellipsoid
-or terrain intersection performed on this side:
+Both intersect against a smooth WGS-84 ellipsoid (no terrain). For a caller with its own
+terrain/DEM model, use `POST /footprint/rays` instead - given a satellite/time range it returns,
+per timestamp, the ECEF ray origin and boresight + 4 FOV-corner unit direction vectors, with no
+intersection performed on this side:
 
 ```bash
 curl -X POST "http://localhost:8000/footprint/rays" \
@@ -461,11 +411,10 @@ curl -X POST "http://localhost:8000/footprint/rays" \
   }'
 ```
 
-For the common case of just wanting the ellipsoid-approximated footprint *polygon* itself, driven by
-real telemetry over a time range (no manual per-point calls, no external terrain model needed), use
-`POST /footprint/track` (GeoJSON, one Polygon+Point feature per timestamp with a `time` property) or
-`POST /footprint/track/czml` (CZML, one polygon+point packet per timestamp scoped with `availability`
-so Cesium shows the correct footprint as the timeline plays) - same request body as `/footprint/rays`:
+For the ellipsoid-approximated footprint *polygon* itself, driven by real telemetry (no manual
+per-point calls, no terrain model needed), use `POST /footprint/track` (GeoJSON, one Polygon+Point
+feature per timestamp) or `POST /footprint/track/czml` (CZML, scoped by `availability` so Cesium
+shows the right footprint as the timeline plays) - same request body as `/footprint/rays`:
 
 ```bash
 curl -X POST "http://localhost:8000/footprint/track/czml" \
@@ -481,33 +430,25 @@ curl -X POST "http://localhost:8000/footprint/track/czml" \
 
 ### EOC camera mounting correction (`satellite_id` -> `data/sensor_calibration.json`)
 
-The camera is never mounted perfectly square with the body +Z axis - the real as-built
-misalignment is stored per satellite in `data/sensor_calibration.json` (shared with
-`footprint-backend`'s Java/Rugged pipeline, see
-[`docs/fov-eoc-boresight.md`](../docs/fov-eoc-boresight.md)). All of the satellite-driven
-footprint endpoints (`/footprint/rays`, `/footprint/track(/czml)`, `/footprint/line/track*`)
-apply this correction automatically from the request's `satellite_id` - the same "rotate body
-+Z to the calibrated unit vector" minimal rotation the Java pipeline uses, applied to the
-boresight and all FOV corner rays before the ellipsoid intersection. A satellite with no
-calibrated entry (e.g. `O1A`) is unaffected - this is a no-op, identical to earlier versions of
-this API. `POST /footprint/compute` and `/footprint/czml` (manual position/quaternion, no real
-telemetry) accept an optional `satellite_id` field for the same correction; omit it to get the
-uncorrected geometry as before.
+The camera's real as-built mounting misalignment is stored per satellite in
+`data/sensor_calibration.json` (shared with `footprint-backend`'s Java/Rugged pipeline - see
+[`docs/fov-eoc-boresight.md`](../docs/fov-eoc-boresight.md)). All satellite-driven footprint
+endpoints (`/footprint/rays`, `/footprint/track(/czml)`, `/footprint/line/track*`) apply it
+automatically from `satellite_id` - the same minimal rotation the Java pipeline uses, applied to
+boresight + FOV corners before ellipsoid intersection. No calibrated entry (e.g. `O1A`) means
+no-op. `/footprint/compute`/`/footprint/czml` (manual mode) accept an optional `satellite_id` for
+the same effect; omit it for uncorrected geometry.
 
-Looking up the calibration file itself resolves next to the repo's `data/` folder by default;
-override with the `SENSOR_CALIBRATION_PATH` env var if this project is embedded elsewhere
-without that sibling folder (a missing file/satellite/field is treated as no correction, not an
-error).
+The calibration file resolves next to the repo's `data/` folder by default; override with
+`SENSOR_CALIBRATION_PATH` if embedded elsewhere (missing file/satellite/field = no correction).
 
 ### Push-broom line footprint (current scan line)
 
-`/footprint/track` treats the camera as a frame sensor - a full FOV rectangle projected at
-each instant. A real push-broom sensor instead scans one across-track *line* at a time as the
-satellite moves, and the ground track is built up from many such lines. `POST
-/footprint/line/track` (and its `/geojson` and `/czml` variants) model that: given
-`fov_across_deg` (the sensor's across-track FOV - along-track width is treated as zero, same as
-the DEM server's own `SensorConfig`, which likewise only carries a single FOV angle), it returns
-the left/right ground points of the line currently being scanned, per HK telemetry sample:
+`/footprint/track` treats the camera as a frame sensor (full FOV rectangle per instant). A real
+push-broom sensor instead scans one across-track *line* at a time as the satellite moves. `POST
+/footprint/line/track` (+ `/geojson`/`/czml` variants) model that: given `fov_across_deg`
+(along-track width treated as zero, same as DEM's `SensorConfig`), it returns the left/right
+ground points of the line currently being scanned, per HK telemetry sample:
 
 ```bash
 curl -X POST "http://localhost:8000/footprint/line/track/czml" \
@@ -521,22 +462,19 @@ curl -X POST "http://localhost:8000/footprint/line/track/czml" \
   }'
 ```
 
-This is the piece needed to draw "where the sensor plane's current line is" inside the
-rectangular-pyramid FOV visualization (`cesium-viewer.js`'s `cornerDirsBody`/`_createFovFootprint`
-on the DEM server side already renders that pyramid from the same corner-ray geometry as
-`/footprint/rays` - this adds the line that sweeps inside it).
+This draws "where the sensor plane's current line is" inside the DEM server's existing
+rectangular-pyramid FOV visualization (same corner-ray geometry as `/footprint/rays`).
 
-Sample spacing follows the raw HK telemetry cadence (~1 Hz), not the camera's real `line_rate`
-(hundreds to thousands of Hz) - matching that would need attitude/position interpolation between
-HK samples, which is a materially bigger feature this project doesn't implement; the DEM server's
-own Orekit/Rugged pipeline is the source of truth for line-accurate push-broom simulation. This
-endpoint is for showing *where* the active line roughly is, at telemetry resolution.
+Sample spacing follows raw HK telemetry cadence (~1 Hz), not the camera's real `line_rate`
+(hundreds-thousands of Hz) - that would need attitude/position interpolation this project doesn't
+implement; the DEM server's Orekit/Rugged pipeline is the source of truth for line-accurate
+simulation. This endpoint shows *where* the active line roughly is, at telemetry resolution.
 
 ### Orbit propagation (TLE / SGP4, no DB)
 
-Independent of real telemetry - given a TLE, propagates the orbit over a time range via the
-`sgp4` package and returns TEME(~=ECI) position/velocity per timestamp. Useful for a predicted/
-planned trajectory to compare against real HK position, or when no live telemetry is available yet:
+Independent of real telemetry - propagates a TLE over a time range via `sgp4` and returns
+TEME(~=ECI) position/velocity per timestamp. Useful for a predicted trajectory or when no live
+telemetry is available yet:
 
 ```bash
 curl -X POST "http://localhost:8000/propagation/track" \
@@ -576,14 +514,11 @@ Returns overall `PASS`/`WARN`/`FAIL` plus per-check detail (see `core/validator/
 
 ### Mission schedule (real camera ON/OFF window, separate MCE DB)
 
-Everything above reads the HK telemetry DB (`MYSQL_*`/`satellites.toml`). This endpoint reads a
-**completely different database** - the MCE (mission scheduling) server's own DB, which holds
-`TB_Selected_Mission_Schedule`: when a satellite was actually scheduled/commanded to shoot, and
-(via `core/mission/mce_db.py::compute_camera_window`) the real camera ON~OFF window computed from
-the mission's `MissionParameterJson` (`scanStart`/`camStart`/`camEnd`) - much narrower than the
-schedule's `eventStart`~`eventEnd`, which is the whole pass/scheduling window, not the actual
-shutter-open interval. Requires `MCE_DB_*` in `.env` (see `.env.example`); unrelated to
-`MYSQL_*`/`satellites.toml`.
+Everything above reads the HK telemetry DB. This endpoint reads a **completely different
+database** - the MCE (mission scheduling) server's own DB (`TB_Selected_Mission_Schedule`), and
+(via `core/mission/mce_db.py::compute_camera_window`) computes the real camera ON~OFF window from
+`MissionParameterJson` (`scanStart`/`camStart`/`camEnd`) - much narrower than the schedule's whole
+`eventStart`~`eventEnd` pass window. Requires `MCE_DB_*` in `.env`; unrelated to `MYSQL_*`.
 
 ```bash
 curl -X POST "http://localhost:8000/mission/schedule" \
@@ -630,9 +565,8 @@ docker build -t sat-simulation-api .
 docker run --rm -p 8000:8000 --env-file .env sat-simulation-api
 ```
 
-For standing up a persistent instance on a shared test server (e.g. for another service like a
-DEM/Cesium server to call), see [`deploy/README.md`](deploy/README.md) - it covers a
-one-command Docker deploy script and a systemd-based alternative.
+For a persistent instance on a shared test server, see [`deploy/README.md`](deploy/README.md)
+(one-command Docker deploy script + a systemd-based alternative).
 
 ## Running tests
 

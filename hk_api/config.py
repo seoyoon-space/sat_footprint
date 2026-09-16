@@ -53,14 +53,12 @@ class Settings(BaseSettings):
 
     satellite_config_path: str = "config/satellites.toml"
 
-    # 설정 시 /telemetry, /footprint, /validator 라우터가 X-API-Key 헤더를 요구함.
-    # 미설정(None)이면 인증을 건너뜀 - 로컬 개발용 기본값이며, 운영 배포 시 반드시 설정할 것.
+    # 설정 시 /telemetry, /footprint, /validator가 X-API-Key 헤더를 요구. 미설정(기본값,
+    # 로컬 개발용)이면 인증 생략 - 운영 배포 시 반드시 설정할 것.
     api_key: str | None = None
 
-    # 브라우저에서 이 API를 직접 fetch하는 프론트엔드(예: Cesium 기반 시각화 페이지)가
-    # 있다면 그 origin을 쉼표로 구분해 등록. 미설정(빈 문자열)이면 CORS 미들웨어 자체를
-    # 추가하지 않아 모든 브라우저 cross-origin 요청이 차단됨(서버-서버 호출은 영향 없음).
-    # 예: CORS_ALLOWED_ORIGINS=https://dem.example.com,http://localhost:5173
+    # 브라우저 프론트엔드가 이 API를 직접 fetch할 origin을 쉼표로 등록. 미설정 시 CORS
+    # 미들웨어를 안 붙여 브라우저 cross-origin 요청은 차단(서버-서버 호출은 무관).
     cors_allowed_origins: str = ""
 
     @property
@@ -113,11 +111,8 @@ def build_mysql_connection_url(
             "MySQL env is incomplete. Set MYSQL_HOST, MYSQL_USER, MYSQL_DB (or MYSQL_CONNECTION_URL)."
         )
 
-    # MySQL에서 schema와 database는 보통 같은 값입니다. satellite_id(O1A)와 같은 값을
-    # DB 이름으로 쓰면 안 되고, 실제 운영 DB는 nstanl 같은 database 이름이어야 합니다 -
-    # 위에서 이미 db가 반드시 값을 가짐을 보장했으므로(없으면 ValueError), 여기서는 그
-    # db를 그대로 쓴다. schema는 db와 다른 값을 가리키려는 게 아니라면 별도로 쓰이지
-    # 않는다(둘이 어긋나는 걸 검증하고 싶다면 여기서 명시적으로 확인해야 한다).
+    # schema는 보통 db와 같은 값 - satellite_id(O1A)를 DB 이름으로 착각하지 말 것,
+    # 실제 DB는 nstanl 같은 이름이어야 한다.
     return f"mysql+pymysql://{user}:{password or ''}@{host}:{port}/{db}"
 
 

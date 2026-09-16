@@ -150,16 +150,10 @@ def camera_rays_ecef(
 ) -> dict:
     """카메라 boresight + FOV 네 모서리의 ECEF 광선(공통 원점 + 5개 방향)만 계산.
 
-    타원체/지형과의 교차는 하지 않는다 - 정밀 지형(DEM)을 가진 외부 서버가 이 광선을
-    받아 자체 지형모델로 교차시켜 풋프린트를 계산하는 용도로 쓴다(compute_footprint처럼
-    이 API 자체가 매끈한 WGS-84 타원체로 근사 교차하는 것보다 더 정확한 결과를 얻을 수
-    있음). 방향 벡터는 위치가 아니므로 ECI->ECEF는 순수 회전만 적용한다.
-
-    satellite_id: 지정하면 data/sensor_calibration.json의 EOC(카메라) 마운팅 보정을
-        적용한다 - footprint-backend(Java)의 FootprintCalculator가 쓰는 것과 정확히 같은
-        "body +Z를 실측 unit vector로 보내는 최소 회전"을 boresight/FOV 모서리 전체에
-        일괄 적용한다(docs/fov-eoc-boresight.md 참고). 위성에 보정값이 없으면(예: O1A)
-        무보정 - satellite_id를 안 주는 기존 호출과 동일하게 동작한다.
+    타원체/지형 교차는 하지 않는다 - 정밀 지형(DEM)을 가진 외부 서버가 이 광선을 받아
+    자체 지형모델로 교차시키는 용도. satellite_id를 주면 data/sensor_calibration.json의
+    EOC 카메라 마운팅 보정(README "EOC camera mounting correction" 참고)을 boresight/FOV
+    모서리에 적용 - 보정값 없으면(예: O1A) 무보정, 기존 호출과 동일하게 동작한다.
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
@@ -200,8 +194,7 @@ def compute_footprint(
     너머를 바라보는 광선은 None으로 남기고 `visible`이 False이면 FOV의 일부(또는
     전부)가 지구를 비켜가고 있다는 뜻. 실제 지형(DEM)을 반영한 정밀 풋프린트가
     필요하면 camera_rays_ecef()로 광선만 받아 지형 데이터가 있는 쪽에서 교차시킬 것.
-
-    satellite_id: camera_rays_ecef() 참고 - EOC 마운팅 보정 적용 여부.
+    satellite_id는 camera_rays_ecef() 참고(EOC 마운팅 보정).
     """
     if utc_datetime.tzinfo is None:
         utc_datetime = utc_datetime.replace(tzinfo=timezone.utc)
@@ -324,20 +317,12 @@ def line_ground_points(
     boresight_body: Vector3 = (0.0, 0.0, 1.0),
     satellite_id: str | None = None,
 ) -> dict:
-    """푸시브룸(라인스캔) 센서가 이 순간 스캔 중인 '한 줄'의 좌/우 지상점(WGS-84 타원체
-    근사)을 계산.
+    """푸시브룸(라인스캔) 센서가 이 순간 스캔 중인 '한 줄'의 좌/우 지상점(WGS-84 타원체 근사).
 
-    실제 카메라는 진행 방향(along-track)으로는 폭이 없는 한 줄만 그 순간 촬영하고,
-    위성이 이동하면서 그 줄들이 쌓여 2D 영상이 된다(DEM 서버 쪽 SensorConfig가
-    fov_across_deg 하나만 갖고 along-track FOV가 없는 것과 같은 모델). compute_footprint를
-    fov_y_deg=0으로 호출하는 특수 케이스로 재사용 - along-track 폭이 0이면 네
-    모서리가 좌/우 두 쌍으로 겹치므로(corners[0]==corners[3], corners[1]==corners[2]),
-    corners[0]/corners[1]이 그대로 이 줄의 좌/우 끝점이 된다. 어느 바디 축이 실제
-    across-track(폭 방향)인지는 compute_footprint/camera_rays_ecef와 동일하게
-    boresight_body(및 그로부터 유도되는 fov_corner_rays_body의 right/up 축)가 결정하므로,
-    호출자가 실제 카메라 마운팅에 맞는 boresight_body를 넘겨야 한다.
-
-    satellite_id: camera_rays_ecef() 참고 - EOC 마운팅 보정 적용 여부.
+    along-track 폭 0인 compute_footprint(fov_y_deg=0) 특수 케이스 재사용 - 네 모서리가
+    좌/우 두 쌍으로 겹치므로(corners[0]==corners[3], [1]==[2]) 그대로 좌/우 끝점이 된다.
+    across-track 방향은 boresight_body가 결정하므로 실제 카메라 마운팅에 맞게 넘길 것.
+    satellite_id는 camera_rays_ecef() 참고(EOC 마운팅 보정).
     """
     footprint = compute_footprint(
         sat_pos_eci, quaternion_body2eci, utc_datetime, fov_across_deg, 0.0, boresight_body, satellite_id=satellite_id

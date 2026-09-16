@@ -1,11 +1,8 @@
 """위성별 카메라(EOC) 마운팅 보정값 로더.
 
-footprint-backend(Java)의 SensorCalibration.java/FootprintCalculator.java가 실제
-footprint 계산에 쓰는 것과 같은 data/sensor_calibration.json을 읽어, nominal
-boresight(body +Z)를 실측(as-built) 방향으로 보내는 misalignment unit vector를
-제공한다(docs/fov-eoc-boresight.md 참고). 파일이 없거나 위성 항목/필드가 없거나
-벡터 norm이 0에 가까우면 무보정((0,0,0))으로 처리 - Java 쪽과 동일한 fail-safe
-기본값이라, 이 파일 없이 core/geometry를 다른 프로젝트에 그대로 옮겨도 깨지지 않는다.
+footprint-backend(Java)와 같은 data/sensor_calibration.json을 읽어, nominal boresight
+(body +Z)를 실측 방향으로 보내는 misalignment unit vector를 제공(docs/fov-eoc-boresight.md).
+파일/위성/필드가 없으면 무보정((0,0,0)) - Java와 동일한 fail-safe라 이 파일 없이 옮겨도 안전.
 """
 from __future__ import annotations
 

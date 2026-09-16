@@ -1,51 +1,7 @@
-﻿"""
-실행 가이드
+﻿"""HK 텔레메트리 로더 - 라이브러리(HKLoader) + CLI 겸용.
 
-1. 실행 환경
-   - Python 3.11 이상 권장
-   - venv 생성 후 설치하기 !:
-       python -m venv .venv
-    .venv/Scripts/Activate.ps1
-       python -m pip install --upgrade pip
-       python -m pip install -r requirements.txt
-
-2. DB 접속 설정
-   - .env.example을 복사해 .env 생성 후 실제 값 입력
-   - 필수 값 예시:
-       MYSQL_HOST=...
-       MYSQL_PORT=3306
-       MYSQL_USER=...
-       MYSQL_PASSWORD=...
-       MYSQL_DB=...
-   - 또는 CLI에서 --connection-url 직접 지정
-
-3. 실행 예시 (기간 설정 자유)
-   - 전체 HK 데이터 로드 :
-       python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output hk_full.csv
-   - 자세 전용 컬럼만 추출:
-       python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --attitude-only --output hk_attitude.csv
-   - 텍스트 출력:
-       python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output-format txt --output hk_full.txt
-   - 라이브러리 호출:
-       from core.loader.hk_loader import HKLoader
-       loader = HKLoader.from_env()
-       df = loader.load(start_time="2026-08-10", end_time="2026-08-14")
-       print(df.columns)
-
-4. 시간 입력 규칙
-   - KST 기준 날짜 문자열: "2026-08-20"
-   - KST 기준 시각 문자열: "2026-08-20T12:00:00+09:00"
-   - UTC ISO8601: "2026-08-20T00:00:00Z"
-   - Unix epoch seconds: 1787203236
-
-5. 출력 의미
-   - 전체 HK: merged packet의 전체 컬럼 포함
-   - attitude-only: timestamp, px, py, pz, vx, vy, vz, q0, q1, q2, q3 만 추출
-   - 저장 형식: .csv, .txt, .czml 지원
-
-6. 주의
-   - 실제 DB 비밀번호/접속 정보는 .env에만 넣기 ~
-   - .env는 사용자별 환경에 맞게 보관
+설치/환경변수/CLI 예시/시간 입력 형식은 README를 참고 (여기 문서는 코드 계약만 다룸).
+빠른 예시: `python -m core.loader.hk_loader --start-time "2026-08-10" --end-time "2026-08-14" --output hk.csv`
 """
 from __future__ import annotations
 
@@ -134,13 +90,9 @@ def _build_tolerance_overrides(
     }
 
 
-# 실측 HK 쿼터니언은 DB상 scalar-last(x,y,z,w) 순서로 저장되어 있음이 실제 미션
-# 데이터 기반 검증(A/B 비교)으로 확인됨. 이 프로젝트의 모든 회전 연산
-# (core.math_utils.quat 등)은 scalar-first(w,x,y,z)를 가정하므로, 컬럼명은
-# qbody_wrt_eci1..4 그대로 유지한 채 값만 여기서 한 번 재정렬해 이후 전부
-# (core 계산 + API)가 별도 처리 없이 scalar-first를 신뢰할 수 있게 한다.
-# q_ecef_wrt_eci1..4/cmd_q_body_wrt_eci1..4도 이름 규칙은 같지만, 현재 이 프로젝트의
-# 어떤 코드도 이 필드들을 소비하지 않고 순서도 별도 확인되지 않아 포함하지 않았다.
+# DB의 qbody_wrt_eci1..4는 scalar-last(x,y,z,w)(실측 검증됨) - core 전체가 쓰는
+# scalar-first(w,x,y,z)로 여기서 한 번 재정렬(컬럼명은 그대로 유지).
+# q_ecef_wrt_eci1..4/cmd_q_body_wrt_eci1..4는 미사용/미확인이라 대상에서 제외.
 _QUATERNION_SCALAR_LAST_GROUPS: tuple[tuple[str, str, str, str], ...] = (
     ("qbody_wrt_eci1", "qbody_wrt_eci2", "qbody_wrt_eci3", "qbody_wrt_eci4"),
 )
@@ -154,17 +106,10 @@ def _reorder_scalar_last_quaternions(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# qbody_wrt_eci1..4가 실제로는 ECI->Body 회전을 담고 있다는 사실이 DEM 서버 쪽
-# 실사용 코드(czml_generator.py, HK 필드 문서에 "ECI-to-Body"로 명시하고 실제로
-# quaternion_conjugate()를 걸어 Body->ECI로 뒤집은 뒤에만 사용)로 확인됨 - 이 프로젝트의
-# core.coordinates/core.geometry.footprint는 처음부터 "body->ECI를 받는다"고 가정하고
-# 지어졌으므로(quaternion_body2eci라는 인자명 자체가 그 전제), 그 전제를 실제로 맞추려면
-# 로딩 경계에서 켤레(conjugate)를 한 번 취해야 한다. 쿼터니언 켤레는 스칼라부(w)는 그대로
-# 두고 벡터부(x,y,z) 부호만 뒤집으면 되므로, 이미 scalar-first로 재정렬된 뒤에 적용한다
-# (_reorder_scalar_last_quaternions가 먼저 실행되어야 어느 성분이 w인지 알 수 있음).
+# qbody_wrt_eci1..4는 실제로 ECI->Body 회전(DEM 서버가 conjugate로 뒤집어 쓰는 것으로 확인됨) -
+# 이 프로젝트는 Body->ECI를 가정하므로(quaternion_body2eci), 여기서 켤레를 취해 뒤집는다.
+# scalar-first로 이미 재정렬된 뒤 호출되므로, w(col1)는 두고 x,y,z(col2~4) 부호만 뒤집으면 된다.
 def _invert_quaternion_rotation_direction(df: pd.DataFrame) -> pd.DataFrame:
-    # 이 함수는 _reorder_scalar_last_quaternions 이후에 호출되므로 컬럼 순서는 이미
-    # (w, x, y, z) - w(col1)는 그대로 두고 벡터부 x,y,z(col2~4)의 부호만 뒤집는다.
     for col1, col2, col3, col4 in _QUATERNION_SCALAR_LAST_GROUPS:
         if all(c in df.columns for c in (col1, col2, col3, col4)):
             df[col2] = -df[col2]
@@ -173,11 +118,8 @@ def _invert_quaternion_rotation_direction(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-# pos_wrt_eci1..3(위치)/vel_wrt_eci1..3(속도)는 DB 원본이 킬로미터(킬로미터/초) 단위로
-# 저장되어 있음이 확인됨(DEM 서버 czml_generator.py도 동일 필드를 km으로 문서화하고
-# 실제로 *1000.0으로 m 변환해 사용). 이 프로젝트의 core.coordinates/core.geometry.footprint는
-# WGS84_A 등 전부 미터 기준으로 지어졌으므로, 로딩 경계에서 한 번 미터로 변환해 이후
-# 전부(core 계산 + API 응답)가 별도 처리 없이 미터임을 신뢰할 수 있게 한다.
+# pos_wrt_eci1..3/vel_wrt_eci1..3은 DB 원본이 km(/s) 단위(확인됨) - core 전체가 미터
+# 기준(WGS84_A 등)이므로 로딩 경계에서 한 번 변환해둔다.
 _KM_TO_M_COLUMNS: tuple[str, ...] = (
     "pos_wrt_eci1", "pos_wrt_eci2", "pos_wrt_eci3",
     "vel_wrt_eci1", "vel_wrt_eci2", "vel_wrt_eci3",
@@ -196,28 +138,22 @@ class HKLoader:
         """
         connection_url: SQLAlchemy 접속 문자열 (예: mysql+pymysql://user:pass@host:3306/db)
         engine:         이미 생성된 Engine을 재사용하고 싶을 때 전달 (테스트용 등)
-        satellite_id_col: 위성별로 테이블 자체가 분리되지 않고, 하나의 테이블 안에 여러
-                            위성 데이터가 행 단위로 섞여 있는 경우에만 쓰는 구분 컬럼명.
-                            O1A/O1B는 같은 DB 안에서 테이블 자체가 위성별로 분리되어
-                            있으므로(get_hk_packet_schema 참고) 이 필터가 필요 없어
-                            None으로 둔다.
+        satellite_id_col: 한 테이블에 여러 위성 데이터가 섞여 있을 때만 쓰는 구분 컬럼명.
+                            O1A/O1B는 테이블 자체가 분리돼 있어 None으로 둔다.
         """
         self.engine = engine or create_engine(connection_url, pool_pre_ping=True)
         self.satellite_id_col = satellite_id_col
-        # 테이블 스키마(컬럼 목록)는 런타임 중 바뀌지 않으므로 인스턴스 단위로 캐시.
-        # HKLoader는 api/routes.py, api/czml_routes.py에서 lru_cache로 재사용되므로
-        # 이 캐시는 단일 load() 호출 내 중복 조회뿐 아니라 이후 API 요청들에도 재사용된다.
+        # 테이블 스키마는 런타임 중 불변이므로 캐시(HKLoader가 api/*.py에서 lru_cache로
+        # 재사용되므로 이후 API 요청들에도 재사용됨).
         self._columns_cache: dict[str, set[str]] = {}
         self._columns_cache_lock = threading.Lock()
 
     @classmethod
     def from_env(cls, *, connection_url: str | None = None, schema: str | None = None) -> "HKLoader":
-        """환경변수 기반으로 MySQL 연결 생성
-           .env 파일 내 구조 확인
+        """환경변수(.env) 기반으로 MySQL 연결 생성.
 
-        config 모듈은 여기(그리고 for_satellite())에서만 지연 임포트한다 - HKLoader(connection_url=...)
-        로 직접 생성해 쓰는 호출부(예: 이 파일만 다른 프로젝트에 그대로 옮겨 쓰는 경우)는
-        config.py가 아예 없어도 동작해야 하기 때문.
+        config는 여기(및 for_satellite())에서만 지연 임포트 - connection_url을 직접 주는
+        호출부는 config.py 없이도 동작해야 하므로.
         """
         from config import build_mysql_connection_url
 
@@ -349,23 +285,10 @@ class HKLoader:
         interpolate_gaps: bool = True,
         invert_quaternion_direction: bool = True,
     ) -> pd.DataFrame:
-        """
-        start_time, end_time:
-            - KST 기준 날짜 문자열: "2026-08-20" 또는 "2026-08-20T12:00:00+09:00"
-            - UTC ISO8601: "2026-08-20T00:00:00Z"
-            - Unix epoch seconds: 1787203236
-        satellite_id:         위성 구분자 (O1A, O1B 등). hk1~hk6 테이블명이 위성마다
-                               다르므로(tbl_obs1a_hk* / tbl_obs1b_hk*) 테이블 조회 시 사용
-        invert_quaternion_direction:
-                               기본 True - qbody_wrt_eci1..4를 이 프로젝트 전역(core/coordinates.py,
-                               core/geometry/footprint.py)이 쓰는 Body->ECI 방향으로 뒤집음.
-                               False로 주면 이 방향반전만 건너뛰고 재정렬(scalar-first)·단위
-                               변환(m)은 그대로 적용 - Orekit(Rotation/TimeStampedAngularCoordinates)
-                               기반 소비자(예: sat_footprint의 Java/Rugged 파이프라인, 그 CZML
-                               생성기)는 정확히 이 방향을 기대한다는 것이 실제 타겟 좌표 대조로
-                               확인됐다(반대로 주면 Rugged 지형교차가 타임아웃/메모리 폭주로
-                               깨짐). 이 프로젝트 자신의 계산(coordinates.py 등)에는 절대 쓰지
-                               말 것 - 그쪽은 항상 기본값(True)이 필요하다.
+        """start_time/end_time: KST 날짜/시각 문자열, UTC ISO8601, 또는 epoch seconds.
+        satellite_id: 위성 구분자(O1A/O1B 등) - hk1~hk6 테이블 프리픽스 선택에 사용.
+        invert_quaternion_direction: 기본 True(이 프로젝트의 Body->ECI 방향). Orekit/Rugged
+            기반 소비자는 False가 필요 - README "Quaternion semantics" 참고.
         """
         start_epoch = _normalize_query_time(start_time, is_end=False)
         end_epoch = _normalize_query_time(end_time, is_end=True)

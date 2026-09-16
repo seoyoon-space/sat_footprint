@@ -1,16 +1,8 @@
 """TLE(Two-Line Element) 기반 SGP4 궤도 전파.
 
-이 프로젝트의 나머지 계산 코드(core/coordinates.py, core/math_utils/quat.py,
-core/geometry/footprint.py)는 표준 라이브러리(math)만으로 직접 구현되어 있지만,
-SGP4는 예외적으로 검증된 외부 패키지(sgp4, https://pypi.org/project/sgp4)를 사용.
-
-프레임/시간 관례:
-- 전파 결과는 TEME(True Equator Mean Equinox) 프레임의 위치[km]/속도[km/s]다.
-  core.coordinates가 다루는 ECI(GCRF/J2000 평균 적도/분점)와는 정의상 다른 준거계지만
-  차이는 수 각초~수십 각초 수준이라, SGP4를 다루는 실무에서는 TEME를 그대로 'ECI'로
-  취급하는 것이 표준 관행이다(Vallado도 이를 명시적으로 언급).
-- 입력 시각은 UTC로 받아 SGP4 내부적으로 UT1으로 근사한다(core.coordinates의
-  earth_rotation_angle_rad와 동일한 근사 - ΔUT1-UTC 미보정, 최대 약 0.9초 오차).
+core의 나머지 부분과 달리 검증된 외부 패키지(sgp4)를 사용. 결과는 TEME 프레임
+위치[km]/속도[km/s] - core.coordinates의 ECI와는 엄밀히 다른 준거계지만 차이가
+수십 각초 수준이라 실무 관행대로 TEME=ECI로 취급한다.
 """
 from __future__ import annotations
 
