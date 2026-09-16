@@ -1,16 +1,35 @@
-"""Satellite attitude visualization server.
+r"""Satellite attitude visualization server — entry point for the whole app.
 
 Flask app that serves a landing page (satellite select) and a Cesium 3D viewer
 with attitude data loaded from the HK database — currently O1A and O1B
 (HK_ENABLED_SATELLITES), both stored in the same DB under per-satellite tables
 (tbl_obs1a_hk* / tbl_obs1b_hk*).
 
-Usage:
-    pip install flask numpy pandas python-dotenv
-    set CESIUM_ION_TOKEN=your-token-here
+This is the only thing a user talks to. It does no heavy computation itself —
+it calls out to three other pieces and combines their results into HTML/JSON:
+  - hk_api (separate FastAPI process, port 8001) — HK telemetry + mission schedule,
+    reached either via direct HTTP calls (_load_attitude_or_error,
+    _load_attitude_ecef_or_error) or transparently proxied under /api/hk/<subpath>
+  - footprint-backend (Java/Orekit/Rugged, footprint-backend/) — run as a subprocess
+    from /api/footprint/compute for real DEM-based footprint computation
+  - EP server / mission DBs (ep_client.py, mce_db.py, mps_db.py) — AOI/mission lookups
+
+Routes fall into three groups: page routes (/, /viewer, /old, /old/viewer — render
+templates only), data API routes (/api/czml, /api/footprint/compute, /api/ep/*, etc.
+— the actual orchestration), and the /api/hk/* reverse proxy to hk_api.
+
+Run (hk_api first, then this — two separate terminals, both stay in the foreground):
+
+    # terminal 1 — hk_api (port 8001)
+    cd hk_api
+    .\.venv\Scripts\Activate.ps1
+    python -m uvicorn main:app --host 127.0.0.1 --port 8001
+
+    # terminal 2 — this file (port 8080)
+    cd attitude-viewer
     python app.py
 
-    Open http://localhost:5050 in browser.
+    Open http://localhost:8080/sat_footprint/ in browser.
 
 Query parameters for /api/czml:
     satellite   — O1A or O1B, default: O1A
